@@ -1,0 +1,12 @@
+{
+  "name": "music-decryptor",
+  "version": "1.0.0",
+  "description": "音乐解密转换工具",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

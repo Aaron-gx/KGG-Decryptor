@@ -1,0 +1,27 @@
+﻿# Dependencies
+.pylibs/
+node_modules/
+tauri-app/node_modules/
+
+# Build artifacts
+tauri-app/dist/
+tauri-app/src-tauri/target/
+tauri-app/src-tauri/gen/
+
+# Personal data - NEVER commit
+*.db
+*.kgg
+*.mp3
+*.ogg
+*.flac
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

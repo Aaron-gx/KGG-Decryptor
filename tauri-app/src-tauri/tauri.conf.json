@@ -1,0 +1,37 @@
+﻿{
+  "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "music-decryptor",
+  "version": "1.0.0",
+  "identifier": "com.kgg-decryptor.desktop",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "音乐解密转换工具",
+        "width": 820,
+        "height": 700,
+        "resizable": true,
+        "minWidth": 640,
+        "minHeight": 600,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "msi",
+      "nsis"
+    ],
+   "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+   ],
+  }
+}
