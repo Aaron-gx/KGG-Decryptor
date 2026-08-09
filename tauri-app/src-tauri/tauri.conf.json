@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-config-schema/schema.json",
   "productName": "music-decryptor",
   "version": "1.0.0",
@@ -29,9 +29,9 @@
       "msi",
       "nsis"
     ],
-   "icon": [
+    "icon": [
       "icons/icon.ico",
       "icons/icon.png"
-   ],
+    ]
   }
 }

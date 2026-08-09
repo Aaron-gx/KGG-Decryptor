@@ -394,6 +394,12 @@ struct DecryptResultData { audio: Vec<u8>, format: String, title: String }
 #[derive(Serialize)]
 struct SongListResult { success: bool, total: usize, songs: Vec<SongInfo>, error: Option<String> }
 
+#[derive(Serialize, Clone)]
+struct BatchItem { filename: String, success: bool, format: String, error: Option<String> }
+
+#[derive(Serialize)]
+struct BatchResult { total: usize, succeeded: usize, failed: usize, items: Vec<BatchItem> }
+
 // ---- Commands ----
 #[tauri::command]
 fn decrypt_kgg(file_data: Vec<u8>, filename: String) -> Result<DecryptResultData, String> {
@@ -458,6 +464,67 @@ fn stop_monitor(state: tauri::State<'_, std::sync::Mutex<MonitorState>>) -> Resu
 }
 
 #[tauri::command]
+fn batch_decrypt(input_dir: String, output_dir: String, app: tauri::AppHandle) -> Result<BatchResult, String> {
+    let mut items = Vec::new();
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    let entries = std::fs::read_dir(&input_dir).map_err(|e| e.to_string())?;
+    let mut kgg_files: Vec<_> = entries.flatten()
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "kgg"))
+        .collect();
+    kgg_files.sort_by_key(|e| e.path());
+    let total = kgg_files.len();
+    for entry in kgg_files {
+        let path = entry.path();
+        let fname = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let _ = app.emit("monitor-event", MonitorEvent {
+            event_type: "detect".into(), filename: fname.clone(), message: "batch".into()
+        });
+        match std::fs::read(&path) {
+            Ok(data) => match decrypt_kgg_bytes(&data) {
+                Ok((audio, fmt)) => {
+                    let out_name = format!("{}.{}", fname, fmt);
+                    let out_path = Path::new(&output_dir).join(&out_name);
+                    match std::fs::write(&out_path, &audio) {
+                        Ok(_) => {
+                            succeeded += 1;
+                            let _ = app.emit("monitor-event", MonitorEvent {
+                                event_type: "success".into(), filename: fname.clone(), message: format!(".{}", fmt)
+                            });
+                            items.push(BatchItem { filename: fname, success: true, format: fmt, error: None });
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            let msg = format!("save: {}", e);
+                            let _ = app.emit("monitor-event", MonitorEvent {
+                                event_type: "error".into(), filename: fname.clone(), message: msg.clone()
+                            });
+                            items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(msg) });
+                        }
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    let _ = app.emit("monitor-event", MonitorEvent {
+                        event_type: "error".into(), filename: fname.clone(), message: e.clone()
+                    });
+                    items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(e) });
+                }
+            },
+            Err(e) => {
+                failed += 1;
+                let msg = format!("read: {}", e);
+                let _ = app.emit("monitor-event", MonitorEvent {
+                    event_type: "error".into(), filename: fname.clone(), message: msg.clone()
+                });
+                items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(msg) });
+            }
+        }
+    }
+    Ok(BatchResult { total, succeeded, failed, items })
+}
+
+#[tauri::command]
 fn get_kugou_dir() -> Option<String> { find_kugou_download_dir() }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -465,7 +532,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init()).plugin(tauri_plugin_dialog::init())
         .manage(std::sync::Mutex::new(MonitorState { watcher: None }))
-        .invoke_handler(tauri::generate_handler![decrypt_kgg, get_songs, start_monitor, stop_monitor, get_kugou_dir])
+        .invoke_handler(tauri::generate_handler![decrypt_kgg, get_songs, start_monitor, stop_monitor, get_kugou_dir, batch_decrypt])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
