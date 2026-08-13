@@ -7,6 +7,8 @@ use rusqlite::Connection;
 use base64::Engine;
 use std::collections::HashMap;
 use notify::{Watcher, RecursiveMode, Event, EventKind};
+use flate2::read::ZlibDecoder;
+use std::io::Read;
 use std::path::Path;
 use tauri::Emitter;
 
@@ -384,6 +386,45 @@ fn find_kugou_download_dir() -> Option<String> {
     None
 }
 
+
+// ---- KRC lyrics decryption ----
+const KRC_MAGIC: &[u8] = b"krc1";
+const KRC_XOR_KEY: [u8; 16] = [
+    0x40, 0x47, 0x61, 0x77, 0x5E, 0x32, 0x74, 0x47,
+    0x51, 0x36, 0x31, 0x2D, 0xCE, 0xD2, 0x6E, 0x69,
+];
+
+fn decrypt_krc_bytes(data: &[u8]) -> Result<String, String> {
+    if data.len() < 4 || &data[..4] != KRC_MAGIC {
+        return Err("not a KRC file".into());
+    }
+    let encrypted = &data[4..];
+    let mut decrypted = Vec::with_capacity(encrypted.len());
+    for (i, &b) in encrypted.iter().enumerate() {
+        decrypted.push(b ^ KRC_XOR_KEY[i % 16]);
+    }
+    let mut decoder = ZlibDecoder::new(&decrypted[..]);
+    let mut output = String::new();
+    decoder.read_to_string(&mut output).map_err(|e| format!("decompress error: {}", e))?;
+    Ok(output)
+}
+
+fn find_kugou_lyrics_dir() -> Option<String> {
+    let candidates = [
+        "D:\\KuGou\\Lyric", "D:\\KuGou\\Lyrics",
+        "C:\\KuGou\\Lyric", "C:\\KuGou\\Lyrics",
+    ];
+    for c in &candidates {
+        if Path::new(c).exists() { return Some(c.to_string()); }
+    }
+    let home = std::env::var("USERPROFILE").ok()?;
+    for name in &["Lyric", "Lyrics"] {
+        let p = Path::new(&home).join("Music").join(name);
+        if p.exists() { return Some(p.to_string_lossy().into()); }
+    }
+    None
+}
+
 // ---- Tauri types ----
 #[derive(Serialize)]
 struct SongInfo { filename: String, display_name: String, song_name: String, artist: String, album: String, bitrate: i64, duration_ms: i64, file_size: i64, quality: String, audio_hash: String }
@@ -527,12 +568,80 @@ fn batch_decrypt(input_dir: String, output_dir: String, app: tauri::AppHandle) -
 #[tauri::command]
 fn get_kugou_dir() -> Option<String> { find_kugou_download_dir() }
 
+#[tauri::command]
+fn get_kugou_lyrics_dir() -> Option<String> { find_kugou_lyrics_dir() }
+
+#[tauri::command]
+fn decrypt_krc(file_data: Vec<u8>) -> Result<String, String> {
+    decrypt_krc_bytes(&file_data)
+}
+
+#[tauri::command]
+fn batch_decrypt_lyrics(input_dir: String, output_dir: String, app: tauri::AppHandle) -> Result<BatchResult, String> {
+    let mut items = Vec::new();
+    let mut succeeded = 0usize;
+    let mut failed = 0usize;
+    let entries = std::fs::read_dir(&input_dir).map_err(|e| e.to_string())?;
+    let mut krc_files: Vec<_> = entries.flatten()
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "krc"))
+        .collect();
+    krc_files.sort_by_key(|e| e.path());
+    let total = krc_files.len();
+    for entry in krc_files {
+        let path = entry.path();
+        let fname = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let _ = app.emit("monitor-event", MonitorEvent {
+            event_type: "detect".into(), filename: fname.clone(), message: "lyrics".into()
+        });
+        match std::fs::read(&path) {
+            Ok(data) => match decrypt_krc_bytes(&data) {
+                Ok(lrc_text) => {
+                    let out_path = Path::new(&output_dir).join(format!("{}.lrc", fname));
+                    match std::fs::write(&out_path, lrc_text.as_bytes()) {
+                        Ok(_) => {
+                            succeeded += 1;
+                            let _ = app.emit("monitor-event", MonitorEvent {
+                                event_type: "success".into(), filename: fname.clone(), message: ".lrc".into()
+                            });
+                            items.push(BatchItem { filename: fname, success: true, format: "lrc".into(), error: None });
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            let msg = format!("save: {}", e);
+                            let _ = app.emit("monitor-event", MonitorEvent {
+                                event_type: "error".into(), filename: fname.clone(), message: msg.clone()
+                            });
+                            items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(msg) });
+                        }
+                    }
+                }
+                Err(e) => {
+                    failed += 1;
+                    let _ = app.emit("monitor-event", MonitorEvent {
+                        event_type: "error".into(), filename: fname.clone(), message: e.clone()
+                    });
+                    items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(e) });
+                }
+            },
+            Err(e) => {
+                failed += 1;
+                let msg = format!("read: {}", e);
+                let _ = app.emit("monitor-event", MonitorEvent {
+                    event_type: "error".into(), filename: fname.clone(), message: msg.clone()
+                });
+                items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(msg) });
+            }
+        }
+    }
+    Ok(BatchResult { total, succeeded, failed, items })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init()).plugin(tauri_plugin_dialog::init())
         .manage(std::sync::Mutex::new(MonitorState { watcher: None }))
-        .invoke_handler(tauri::generate_handler![decrypt_kgg, get_songs, start_monitor, stop_monitor, get_kugou_dir, batch_decrypt])
+        .invoke_handler(tauri::generate_handler![decrypt_kgg, get_songs, start_monitor, stop_monitor, get_kugou_dir, batch_decrypt, get_kugou_lyrics_dir, decrypt_krc, batch_decrypt_lyrics])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

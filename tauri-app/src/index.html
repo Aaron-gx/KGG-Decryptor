@@ -99,7 +99,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans
 <div class="app">
   <header class="header">
     <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
-    <div><h1>音乐解密转换工具</h1><div class="sub">支持酷狗 KGG · 手动/批量/自动监控 · 本地解密</div></div>
+<div><h1>音乐解密转换工具</h1><div class="sub">支持酷狗 KGG/KRC · 手动/批量/自动监控 · 本地解密</div></div>
   </header>
 
   <div class="card" id="monCard">
@@ -133,11 +133,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans
     </div>
   </div>
 
+  <div class="card" id="lyricCard">
+    <div class="card-header">
+      <div class="card-left">
+        <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="14" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg></div>
+        <div><div class="card-title">歌词转换</div><div class="card-status" id="lyricStatus">将酷狗 KRC 加密歌词批量转换为 LRC</div></div>
+      </div>
+      <button class="btn-action" id="lyricBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>开始</button>
+    </div>
+    <div class="path-row">
+      <span class="path-label">歌词目录</span>
+      <input type="text" class="path-input" id="lyricInput" placeholder="D:\KuGou\Lyric" />
+      <button class="btn-browse" id="lyricBrowse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+    </div>
+    <div class="path-row">
+      <span class="path-label">输出目录</span>
+      <input type="text" class="path-input" id="lyricOutput" placeholder="LRC 输出位置" />
+      <button class="btn-browse" id="lyricOutputBrowse"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></button>
+    </div>
+  </div>
+
   <div class="upload-zone" id="zone">
     <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
-    <p>拖拽加密音乐文件到这里，或 <span class="link">点击选择</span></p>
-    <div class="hint">支持多个 KGG 文件 · 自动解密输出</div>
-    <input type="file" id="input" multiple accept=".kgg" hidden>
+    <p>拖拽加密文件到这里，或 <span class="link">点击选择</span></p>
+    <div class="hint">支持 KGG 音乐 · KRC 歌词 · 自动解密输出</div>
+    <input type="file" id="input" multiple accept=".kgg,.krc" hidden>
   </div>
   <div class="file-list" id="list"></div>
 
@@ -229,6 +249,38 @@ batchBtn.addEventListener('click',async function(){
   batchRunning=false;batchBtn.disabled=false;
 });
 
+// ---- Lyrics conversion ----
+var lyricBtn=document.getElementById('lyricBtn'),lyricStatus=document.getElementById('lyricStatus');
+var lyricInput=document.getElementById('lyricInput'),lyricOutput=document.getElementById('lyricOutput');
+var lyricBrowse=document.getElementById('lyricBrowse'),lyricOutputBrowse=document.getElementById('lyricOutputBrowse');
+var lyricRunning=false;
+function saveLyricPaths(){try{localStorage.setItem('lyricInput',lyricInput.value);localStorage.setItem('lyricOutput',lyricOutput.value)}catch(e){}}
+try{lyricInput.value=localStorage.getItem('lyricInput')||'';lyricOutput.value=localStorage.getItem('lyricOutput')||''}catch(e){}
+if(isTauri){invoke('get_kugou_lyrics_dir').then(function(dir){if(dir&&!lyricInput.value)lyricInput.value=dir;if(dir&&!lyricOutput.value)lyricOutput.value=dir;saveLyricPaths()})}
+if(isTauri&&dialog){
+  lyricBrowse.addEventListener('click',async function(){var s=await dialog.open({directory:true,multiple:false});if(s)lyricInput.value=s;saveLyricPaths()});
+  lyricOutputBrowse.addEventListener('click',async function(){var s=await dialog.open({directory:true,multiple:false});if(s)lyricOutput.value=s;saveLyricPaths()});
+}else{lyricBrowse.disabled=true;lyricOutputBrowse.disabled=true}
+lyricInput.addEventListener('change',saveLyricPaths);lyricOutput.addEventListener('change',saveLyricPaths);
+lyricBtn.addEventListener('click',async function(){
+  if(!isTauri){showToast('请使用桌面版');return}
+  if(lyricRunning)return;
+  var id=lyricInput.value.trim(),od=lyricOutput.value.trim();
+  if(!id){showToast('请设置歌词目录');return}
+  if(!od){od=id}
+  lyricRunning=true;lyricBtn.disabled=true;lyricStatus.textContent='处理中...';
+  monFeed.innerHTML='';
+  try{
+    var r=await invoke('batch_decrypt_lyrics',{inputDir:id,outputDir:od});
+    lyricStatus.textContent='完成: '+r.succeeded+'/'+r.total+'成功'+(r.failed>0?', '+r.failed+'失败':'');
+    showToast('歌词转换完成: '+r.succeeded+'成功, '+r.failed+'失败');
+  }catch(e){
+    lyricStatus.textContent='失败: '+e;
+    showToast('歌词转换失败: '+e);
+  }
+  lyricRunning=false;lyricBtn.disabled=false;
+});
+
 // ---- Manual decrypt ----
 function addFile(file){
   var item=document.createElement('div');item.className='file-item';
@@ -240,16 +292,23 @@ async function processFile(file,item){
   try{
     if(isTauri){
       var bytes=await fileToUint8(file);
-      var result=await invoke('decrypt_kgg',{fileData:Array.from(bytes),filename:file.name});
-      downloadBytes(new Uint8Array(result.audio),result.title+'.'+result.format);
-      statusEl.className='status done';statusEl.textContent='已保存';
-      item.querySelector('.fmeta').textContent=formatSize(file.size)+' → '+formatSize(result.audio.length);
+      if(file.name.toLowerCase().endsWith('.krc')){
+        var lrcText=await invoke('decrypt_krc',{fileData:Array.from(bytes)});
+        downloadBytes(new TextEncoder().encode(lrcText),file.name.replace(/\.krc$/i,'')+'.lrc');
+        statusEl.className='status done';statusEl.textContent='已保存';
+        item.querySelector('.fmeta').textContent=formatSize(file.size)+' → LRC';
+      }else{
+        var result=await invoke('decrypt_kgg',{fileData:Array.from(bytes),filename:file.name});
+        downloadBytes(new Uint8Array(result.audio),result.title+'.'+result.format);
+        statusEl.className='status done';statusEl.textContent='已保存';
+        item.querySelector('.fmeta').textContent=formatSize(file.size)+' → '+formatSize(result.audio.length);
+      }
     }
   }catch(e){statusEl.className='status error';statusEl.textContent=e.message;item.style.borderColor='var(--error)'}
 }
 ['dragenter','dragover'].forEach(function(ev){zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.add('dragover')})});
 ['dragleave','drop'].forEach(function(ev){zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.remove('dragover')})});
-zone.addEventListener('drop',function(e){var files=[].slice.call(e.dataTransfer.files);if(!files.length)return;var kgg=files.filter(function(f){return f.name.toLowerCase().endsWith('.kgg')});if(kgg.length<files.length)showToast('已忽略不支持的格式');kgg.forEach(addFile)});
+zone.addEventListener('drop',function(e){var files=[].slice.call(e.dataTransfer.files);if(!files.length)return;var kgg=files.filter(function(f){return f.name.toLowerCase().endsWith('.kgg')||f.name.toLowerCase().endsWith('.krc')});if(kgg.length<files.length)showToast('已忽略不支持的格式');kgg.forEach(addFile)});
 zone.addEventListener('click',function(){input.click()});
 input.addEventListener('change',function(e){[].slice.call(e.target.files).forEach(addFile);input.value=''});
 
