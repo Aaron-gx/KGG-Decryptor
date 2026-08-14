@@ -406,7 +406,72 @@ fn decrypt_krc_bytes(data: &[u8]) -> Result<String, String> {
     let mut decoder = ZlibDecoder::new(&decrypted[..]);
     let mut output = String::new();
     decoder.read_to_string(&mut output).map_err(|e| format!("decompress error: {}", e))?;
-    Ok(output)
+    Ok(krc_to_lrc(&output))
+}
+
+/// Convert KRC internal format to standard LRC.
+/// Strips word-level timing tags, converts [ms,duration] to [mm:ss.xx],
+/// filters non-standard metadata, removes BOM.
+fn krc_to_lrc(krc: &str) -> String {
+    let krc = krc.strip_prefix('\u{feff}').unwrap_or(krc);
+    let allowed_meta = ["[ti:", "[ar:", "[al:", "[by:", "[offset:"];
+    let mut out = String::with_capacity(krc.len());
+    for raw_line in krc.split("\r\n") {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if line.is_empty() { continue; }
+        // Lyric line: [start_ms,duration_ms]<word...>text<word...>text...
+        if line.starts_with('[') && line[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            // Check for [digits,digits] format
+            if let Some(close) = line.find(']') {
+                let tag = &line[1..close];
+                let rest = &line[close + 1..];
+                if let Some(comma) = tag.find(',') {
+                    if let Ok(start_ms) = tag[..comma].parse::<u64>() {
+                        let mm = start_ms / 60000;
+                        let ss = (start_ms % 60000) as f64 / 1000.0;
+                        // Strip word-level tags <digits,digits,digits>
+                        let text = strip_word_tags(rest);
+                        out.push_str(&format!("[{:02}:{:05.2}]{}\n", mm, ss, text));
+                        continue;
+                    }
+                }
+                // Metadata tag like [ar:xxx] — keep only standard ones
+                if allowed_meta.iter().any(|m| line.starts_with(m)) {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                // Non-standard tags (id, hash, sign, qq, total, language, manualoffset) are dropped
+            }
+        } else if line.starts_with('[') {
+            // Metadata tag
+            if allowed_meta.iter().any(|m| line.starts_with(m)) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        } else if !line.is_empty() {
+            // Plain text without tags — keep as-is
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Remove <digits,digits,digits> word-level timing tags, keeping only text.
+fn strip_word_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '<' {
+            // Skip until matching >
+            for c2 in chars.by_ref() {
+                if c2 == '>' { break; }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn find_kugou_lyrics_dir() -> Option<String> {
