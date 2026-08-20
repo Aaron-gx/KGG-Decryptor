@@ -6,35 +6,29 @@ KGG Decryptor 是一个基于 Tauri 2 的酷狗本地音乐解密转换工具。
 
 ## Preview
 
-> 截图占位：将截图按下表文件名保存到 `docs/screenshots/` 即可自动显示。
 
 ### 主界面 — 手动解密（日间模式）
 
-> 截图占位：`docs/screenshots/app-decrypt-light.png`
 
 ![手动解密页面](docs/screenshots/app-decrypt-light.png)
 
 ### 自动监控
 
-> 截图占位：`docs/screenshots/app-monitor.png`
 
 ![自动监控页面](docs/screenshots/app-monitor.png)
 
 ### 批量工具（批量解密 + 歌词转换）
 
-> 截图占位：`docs/screenshots/app-batch.png`
 
 ![批量工具页面](docs/screenshots/app-batch.png)
 
 ### 歌曲库
 
-> 截图占位：`docs/screenshots/app-library.png`
 
 ![歌曲库页面](docs/screenshots/app-library.png)
 
 ### 夜间模式
 
-> 截图占位：`docs/screenshots/app-dark.png`
 
 ![夜间模式](docs/screenshots/app-dark.png)
 
