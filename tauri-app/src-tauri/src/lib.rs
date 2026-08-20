@@ -42,7 +42,7 @@ fn md5(data: &[u8]) -> [u8; 16] { Md5::digest(data).into() }
 fn derive_iv_seed(seed: u32) -> u32 {
     let left = u32(seed as u64 * 0x9EF4);
     let right = u32((seed / 0xCE26) as u64 * 0x7FFFFF07);
-    let value = u32(left as u64 - right as u64);
+    let value = left.wrapping_sub(right);
     if value & 0x80000000 == 0 { value } else { u32(value as u64 + 0x7FFFFF07) }
 }
 

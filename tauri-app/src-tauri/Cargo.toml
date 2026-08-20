@@ -1,11 +1,11 @@
 [package]
 name = "music-decryptor"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 
 [lib]
 name = "music_decryptor_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+crate-type = ["lib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
