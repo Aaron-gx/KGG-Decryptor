@@ -26,3 +26,9 @@ Desktop.ini
 *.swp
 *.swo
 release-assets/
+
+# Local reference project used for format compatibility checks
+Kugo-Music-Converter-main/
+
+# Local security-scanner working data
+.mimosa/

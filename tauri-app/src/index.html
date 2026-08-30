@@ -171,8 +171,8 @@ html[data-theme="light"] .theme-toggle .moon{display:none}
       <div class="upload-zone" id="zone">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
         <p>拖拽加密文件到这里，或 <span class="link">点击选择</span></p>
-        <div class="hint">支持 KGG 音乐 · KRC 歌词 · 自动解密输出</div>
-        <input type="file" id="input" multiple accept=".kgg,.krc" hidden>
+        <div class="hint">支持 KGG / KGM / KGMA / VPR / NCM / KWM / QMC / 旧式 MFLAC / MGG 音乐，以及 KRC 歌词</div>
+        <input type="file" id="input" multiple accept=".kgg,.kgm,.kgma,.vpr,.ncm,.kwm,.qmc0,.qmc2,.qmc3,.qmc4,.qmc6,.qmc8,.qmcflac,.qmcogg,.tkm,.mflac,.mflac0,.mflac1,.mgg,.mgg0,.mgg1,.mggl,.krc" hidden>
       </div>
       <div class="file-list" id="list"></div>
     </section>
@@ -180,7 +180,7 @@ html[data-theme="light"] .theme-toggle .moon{display:none}
     <!-- ===== 自动监控 ===== -->
     <section class="view" id="view-monitor">
       <div class="view-title">自动监控</div>
-      <div class="view-desc">开启后自动解密监听目录中新出现的 KGG / KRC 文件</div>
+      <div class="view-desc">开启后自动解密监听目录中新出现的受支持音乐和 KRC 文件</div>
       <div class="card" id="monCard">
         <div class="card-header">
           <div class="card-left">
@@ -219,7 +219,7 @@ html[data-theme="light"] .theme-toggle .moon{display:none}
         <div class="card-header">
           <div class="card-left">
             <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
-            <div><div class="card-title">批量解密音乐</div><div class="card-status" id="batchStatus">解密文件夹内所有 KGG 文件</div></div>
+            <div><div class="card-title">批量解密音乐</div><div class="card-status" id="batchStatus">解密文件夹内所有受支持的音乐格式</div></div>
           </div>
           <button class="btn-action" id="batchBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>开始</button>
         </div>
@@ -406,17 +406,19 @@ async function processFile(file,item){
         statusEl.className='status done';statusEl.textContent='已保存';
         item.querySelector('.fmeta').textContent=formatSize(file.size)+' → LRC';
       }else{
-        var result=await invoke('decrypt_kgg',{fileData:Array.from(bytes),filename:file.name});
+        var result=await invoke('decrypt_file',{fileData:Array.from(bytes),filename:file.name});
         downloadBytes(new Uint8Array(result.audio),result.title+'.'+result.format);
         statusEl.className='status done';statusEl.textContent='已保存';
         item.querySelector('.fmeta').textContent=formatSize(file.size)+' → '+formatSize(result.audio.length);
       }
     }
-  }catch(e){statusEl.className='status error';statusEl.textContent=e.message;item.style.borderColor='var(--error)'}
+  }catch(e){var msg=(e&&e.message)||String(e);statusEl.className='status error';statusEl.textContent=msg;item.style.borderColor='var(--error)'}
 }
 ['dragenter','dragover'].forEach(function(ev){zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.add('dragover')})});
 ['dragleave','drop'].forEach(function(ev){zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.remove('dragover')})});
-zone.addEventListener('drop',function(e){var files=[].slice.call(e.dataTransfer.files);if(!files.length)return;var kgg=files.filter(function(f){return f.name.toLowerCase().endsWith('.kgg')||f.name.toLowerCase().endsWith('.krc')});if(kgg.length<files.length)showToast('已忽略不支持的格式');kgg.forEach(addFile)});
+var supportedExts=['.kgg','.kgm','.kgma','.vpr','.ncm','.kwm','.qmc0','.qmc2','.qmc3','.qmc4','.qmc6','.qmc8','.qmcflac','.qmcogg','.tkm','.mflac','.mflac0','.mflac1','.mgg','.mgg0','.mgg1','.mggl','.krc'];
+function isSupportedFile(f){var n=f.name.toLowerCase();return supportedExts.some(function(ext){return n.endsWith(ext)})}
+zone.addEventListener('drop',function(e){var files=[].slice.call(e.dataTransfer.files);if(!files.length)return;var supported=files.filter(isSupportedFile);if(supported.length<files.length)showToast('已忽略不支持的格式');supported.forEach(addFile)});
 zone.addEventListener('click',function(){input.click()});
 input.addEventListener('change',function(e){[].slice.call(e.target.files).forEach(addFile);input.value=''});
 

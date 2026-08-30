@@ -12,6 +12,8 @@ use std::io::Read;
 use std::path::Path;
 use tauri::Emitter;
 
+mod formats;
+
 const PAGE_SIZE: usize = 0x400;
 const SQLITE_HEADER: &[u8] = b"SQLite format 3\x00";
 const TEA_DELTA: u32 = 0x9E3779B9;
@@ -64,6 +66,7 @@ fn derive_page_key(page: u32) -> [u8; 16] {
 
 fn decrypt_database(data: &[u8]) -> Vec<u8> {
     if data.starts_with(SQLITE_HEADER) { return data.to_vec(); }
+    if data.len() < PAGE_SIZE || data.len() % PAGE_SIZE != 0 { return data.to_vec(); }
     let n_pages = data.len() / PAGE_SIZE;
     let mut buf = data.to_vec();
     decrypt_page1(&mut buf);
@@ -79,6 +82,7 @@ fn decrypt_database(data: &[u8]) -> Vec<u8> {
 }
 
 fn decrypt_page1(buf: &mut [u8]) {
+    if buf.len() < PAGE_SIZE { return; }
     let o10 = u32::from_le_bytes(buf[0x10..0x14].try_into().unwrap());
     let o14 = u32::from_le_bytes(buf[0x14..0x18].try_into().unwrap());
     let v6 = (((o10 & 0xFF) << 8) | ((o10 & 0xFF00) << 16)) & 0xFFFFFFFF;
@@ -131,7 +135,7 @@ fn decrypt_tencent_tea(input: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
     let mut iv_cur = input[..8].to_vec();
     let mut in_pos = 8usize;
     let mut dest_idx = 1 + pad_len;
-    let mut crypt_block = |dest: &mut Vec<u8>, iv_prev: &mut Vec<u8>, iv_cur: &mut Vec<u8>,
+    let crypt_block = |dest: &mut Vec<u8>, iv_prev: &mut Vec<u8>, iv_cur: &mut Vec<u8>,
                            in_pos: &mut usize, dest_idx: &mut usize| {
         std::mem::swap(iv_prev, iv_cur);
         *iv_cur = input[*in_pos..*in_pos + 8].to_vec();
@@ -260,7 +264,36 @@ impl Rc4Cipher {
     }
 }
 
-enum QmcCipher { Map(MapCipher), Rc4(Rc4Cipher) }
+struct StaticCipher;
+impl StaticCipher {
+    fn decrypt(&self, buf: &mut [u8], offset: usize) {
+        const BOX: [u8; 256] = [
+            0x77,0x48,0x32,0x73,0xDE,0xF2,0xC0,0xC8,0x95,0xEC,0x30,0xB2,0x51,0xC3,0xE1,0xA0,
+            0x9E,0xE6,0x9D,0xCF,0xFA,0x7F,0x14,0xD1,0xCE,0xB8,0xDC,0xC3,0x4A,0x67,0x93,0xD6,
+            0x28,0xC2,0x91,0x70,0xCA,0x8D,0xA2,0xA4,0xF0,0x08,0x61,0x90,0x7E,0x6F,0xA2,0xE0,
+            0xEB,0xAE,0x3E,0xB6,0x67,0xC7,0x92,0xF4,0x91,0xB5,0xF6,0x6C,0x5E,0x84,0x40,0xF7,
+            0xF3,0x1B,0x02,0x7F,0xD5,0xAB,0x41,0x89,0x28,0xF4,0x25,0xCC,0x52,0x11,0xAD,0x43,
+            0x68,0xA6,0x41,0x8B,0x84,0xB5,0xFF,0x2C,0x92,0x4A,0x26,0xD8,0x47,0x6A,0x7C,0x95,
+            0x61,0xCC,0xE6,0xCB,0xBB,0x3F,0x47,0x58,0x89,0x75,0xC3,0x75,0xA1,0xD9,0xAF,0xCC,
+            0x08,0x73,0x17,0xDC,0xAA,0x9A,0xA2,0x16,0x41,0xD8,0xA2,0x06,0xC6,0x8B,0xFC,0x66,
+            0x34,0x9F,0xCF,0x18,0x23,0xA0,0x0A,0x74,0xE7,0x2B,0x27,0x70,0x92,0xE9,0xAF,0x37,
+            0xE6,0x8C,0xA7,0xBC,0x62,0x65,0x9C,0xC2,0x08,0xC9,0x88,0xB3,0xF3,0x43,0xAC,0x74,
+            0x2C,0x0F,0xD4,0xAF,0xA1,0xC3,0x01,0x64,0x95,0x4E,0x48,0x9F,0xF4,0x35,0x78,0x95,
+            0x7A,0x39,0xD6,0x6A,0xA0,0x6D,0x40,0xE8,0x4F,0xA8,0xEF,0x11,0x1D,0xF3,0x1B,0x3F,
+            0x3F,0x07,0xDD,0x6F,0x5B,0x19,0x30,0x19,0xFB,0xEF,0x0E,0x37,0xF0,0x0E,0xCD,0x16,
+            0x49,0xFE,0x53,0x47,0x13,0x1A,0xBD,0xA4,0xF1,0x40,0x19,0x60,0x0E,0xED,0x68,0x09,
+            0x06,0x5F,0x4D,0xCF,0x3D,0x1A,0xFE,0x20,0x77,0xE4,0xD9,0xDA,0xF9,0xA4,0x2B,0x76,
+            0x1C,0x71,0xDB,0x00,0xBC,0xFD,0x0C,0x6C,0xA5,0x47,0xF7,0xF6,0x00,0x79,0x4A,0x11,
+        ];
+        for (i, byte) in buf.iter_mut().enumerate() {
+            let at = offset + i;
+            let period = if at > 0x7fff { at % 0x7fff } else { at };
+            *byte ^= BOX[(period * period + 27) & 0xff];
+        }
+    }
+}
+
+enum QmcCipher { Map(MapCipher), Rc4(Rc4Cipher), Static(StaticCipher) }
 impl QmcCipher {
     fn new(key: Vec<u8>) -> Option<Self> {
         if key.len() > 300 { Some(Self::Rc4(Rc4Cipher::new(key))) }
@@ -268,8 +301,9 @@ impl QmcCipher {
         else { None }
     }
     fn decrypt(&self, buf: &mut [u8], offset: usize) {
-        match self { Self::Map(m) => m.decrypt(buf, offset), Self::Rc4(r) => r.decrypt(buf, offset) }
+        match self { Self::Map(m) => m.decrypt(buf, offset), Self::Rc4(r) => r.decrypt(buf, offset), Self::Static(s) => s.decrypt(buf, offset) }
     }
+    fn static_cipher() -> Self { Self::Static(StaticCipher) }
 }
 
 struct KggHeader { audio_offset: usize, audio_hash: String }
@@ -286,10 +320,40 @@ fn parse_kgg_header(data: &[u8]) -> Result<KggHeader, String> {
 
 fn sniff_ext(data: &[u8]) -> &'static str {
     if data.starts_with(b"ID3") { "mp3" }
-    else if data.starts_with(b"\xff\xfb") || data.starts_with(b"\xff\xf3") || data.starts_with(b"\xff\xfa") { "mp3" }
+    else if data.len() >= 2 && data[0] == 0xFF && (data[1] & 0xE0) == 0xE0 { "mp3" }
     else if data.starts_with(b"fLaC") { "flac" }
     else if data.starts_with(b"OggS") { "ogg" }
+    else if data.starts_with(b"RIFF") && data.len() >= 12 && &data[8..12] == b"WAVE" { "wav" }
+    else if data.starts_with(b"ADIF") || data.starts_with(&[0xff, 0xf1]) || data.starts_with(&[0xff, 0xf9]) { "aac" }
+    else if data.len() >= 8 && &data[4..8] == b"ftyp" { "m4a" }
+    else if data.starts_with(&[0x30, 0x26, 0xB2, 0x75]) { "wma" }
+    else if data.starts_with(b"FRM8") { "dff" }
     else { "bin" }
+}
+
+fn is_supported_audio_ext(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+            "kgg" | "kgm" | "kgma" | "vpr" | "ncm" | "kwm"
+            | "mflac" | "mflac0" | "mflac1" | "mgg" | "mgg0" | "mgg1" | "mggl"
+            | "qmc0" | "qmc2" | "qmc3" | "qmc4" | "qmc6" | "qmc8"
+            | "qmcflac" | "qmcogg" | "tkm"
+    )
+}
+
+fn is_supported_watch_ext(ext: &str) -> bool {
+    is_supported_audio_ext(ext) || ext.eq_ignore_ascii_case("krc")
+}
+
+fn decrypt_watch_file(data: &[u8], path: &str) -> Result<(Vec<u8>, String), String> {
+    if path
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.eq_ignore_ascii_case("krc"))
+        .unwrap_or(false)
+    {
+        return Ok((decrypt_krc_bytes(data)?.into_bytes(), "lrc".into()));
+    }
+    formats::decrypt_file(data, path)
 }
 
 fn extract_ekey_map(db_bytes: &[u8]) -> Result<HashMap<String, String>, String> {
@@ -328,15 +392,26 @@ fn query_song_list(db_bytes: &[u8]) -> Result<Vec<SongInfo>, String> {
 }
 
 fn find_db_path() -> Option<std::path::PathBuf> {
-    let appdata = std::env::var("APPDATA").ok()?;
-    let candidates = [std::path::Path::new(&appdata).join("KuGou8"), std::path::PathBuf::from(".")];
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut candidates = vec![
+        cwd.clone(),
+        cwd.join("tools"),
+        cwd.join(".."),
+        cwd.join("../.."),
+    ];
+    for var in ["APPDATA", "LOCALAPPDATA"] {
+        if let Ok(base) = std::env::var(var) {
+            candidates.push(std::path::Path::new(&base).join("KuGou8"));
+            candidates.push(std::path::Path::new(&base).join("KuGou"));
+        }
+    }
     for dir in &candidates {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map_or(false, |e| e == "db") {
-                    if path.file_name().map_or(false, |n| n.to_string_lossy().contains("KGMusicV3")) { return Some(path); }
-                }
+                if path.extension().map_or(false, |e| e.eq_ignore_ascii_case("db"))
+                    && path.file_name().map_or(false, |n| n.to_string_lossy().eq_ignore_ascii_case("KGMusicV3.db"))
+                { return Some(path); }
             }
         }
     }
@@ -416,8 +491,7 @@ fn krc_to_lrc(krc: &str) -> String {
     let krc = krc.strip_prefix('\u{feff}').unwrap_or(krc);
     let allowed_meta = ["[ti:", "[ar:", "[al:", "[by:", "[offset:"];
     let mut out = String::with_capacity(krc.len());
-    for raw_line in krc.split("\r\n") {
-        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+    for line in krc.lines() {
         if line.is_empty() { continue; }
         // Lyric line: [start_ms,duration_ms]<word...>text<word...>text...
         if line.starts_with('[') && line[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
@@ -509,8 +583,20 @@ struct BatchResult { total: usize, succeeded: usize, failed: usize, items: Vec<B
 // ---- Commands ----
 #[tauri::command]
 fn decrypt_kgg(file_data: Vec<u8>, filename: String) -> Result<DecryptResultData, String> {
-    let (audio, fmt) = decrypt_kgg_bytes(&file_data)?;
+    let (audio, fmt) = formats::decrypt_file(&file_data, &filename)?;
     let title = std::path::Path::new(&filename).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or(filename);
+    Ok(DecryptResultData { audio, format: fmt, title })
+}
+
+/// Unified decoder entry point used by the expanded UI.  The old
+/// `decrypt_kgg` command remains as a compatibility alias for older frontends.
+#[tauri::command]
+fn decrypt_file(file_data: Vec<u8>, filename: String) -> Result<DecryptResultData, String> {
+    let (audio, fmt) = formats::decrypt_file(&file_data, &filename)?;
+    let title = std::path::Path::new(&filename)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or(filename);
     Ok(DecryptResultData { audio, format: fmt, title })
 }
 
@@ -527,6 +613,7 @@ fn get_songs() -> SongListResult {
 
 #[tauri::command]
 fn start_monitor(watch_dir: String, output_dir: String, state: tauri::State<'_, std::sync::Mutex<MonitorState>>, app: tauri::AppHandle) -> Result<String, String> {
+    std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
     { let mut s = state.lock().unwrap(); s.watcher = None; }
     let out_dir = output_dir.clone();
     let app_h = app.clone();
@@ -534,14 +621,14 @@ fn start_monitor(watch_dir: String, output_dir: String, state: tauri::State<'_, 
         if let Ok(event) = res {
             if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) { return; }
             for p in &event.paths {
-                if p.extension().map_or(false, |e| e == "kgg") {
+                if p.extension().map_or(false, |e| is_supported_watch_ext(&e.to_string_lossy())) {
                     let fp = p.clone(); let od = out_dir.clone(); let ah = app_h.clone();
                     let fname = fp.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
                     let _ = ah.emit("monitor-event", MonitorEvent { event_type: "detect".into(), filename: fname.clone(), message: "detected".into() });
                     std::thread::spawn(move || {
                         if !wait_for_stable(&fp) { let _ = ah.emit("monitor-event", MonitorEvent { event_type: "error".into(), filename: fname, message: "timeout".into() }); return; }
                         match std::fs::read(&fp) {
-                            Ok(data) => match decrypt_kgg_bytes(&data) {
+                            Ok(data) => match decrypt_watch_file(&data, &fp.to_string_lossy()) {
                                 Ok((audio, fmt)) => {
                                     let stem = fp.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or("output".into());
                                     let out_path = Path::new(&od).join(stem + "." + &fmt);
@@ -571,23 +658,24 @@ fn stop_monitor(state: tauri::State<'_, std::sync::Mutex<MonitorState>>) -> Resu
 
 #[tauri::command]
 fn batch_decrypt(input_dir: String, output_dir: String, app: tauri::AppHandle) -> Result<BatchResult, String> {
+    std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
     let mut items = Vec::new();
     let mut succeeded = 0usize;
     let mut failed = 0usize;
     let entries = std::fs::read_dir(&input_dir).map_err(|e| e.to_string())?;
-    let mut kgg_files: Vec<_> = entries.flatten()
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "kgg"))
+    let mut supported_files: Vec<_> = entries.flatten()
+        .filter(|e| e.path().extension().map_or(false, |ext| is_supported_audio_ext(&ext.to_string_lossy())))
         .collect();
-    kgg_files.sort_by_key(|e| e.path());
-    let total = kgg_files.len();
-    for entry in kgg_files {
+    supported_files.sort_by_key(|e| e.path());
+    let total = supported_files.len();
+    for entry in supported_files {
         let path = entry.path();
         let fname = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let _ = app.emit("monitor-event", MonitorEvent {
             event_type: "detect".into(), filename: fname.clone(), message: "batch".into()
         });
         match std::fs::read(&path) {
-            Ok(data) => match decrypt_kgg_bytes(&data) {
+            Ok(data) => match formats::decrypt_file(&data, &path.to_string_lossy()) {
                 Ok((audio, fmt)) => {
                     let out_name = format!("{}.{}", fname, fmt);
                     let out_path = Path::new(&output_dir).join(&out_name);
@@ -643,6 +731,7 @@ fn decrypt_krc(file_data: Vec<u8>) -> Result<String, String> {
 
 #[tauri::command]
 fn batch_decrypt_lyrics(input_dir: String, output_dir: String, app: tauri::AppHandle) -> Result<BatchResult, String> {
+    std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
     let mut items = Vec::new();
     let mut succeeded = 0usize;
     let mut failed = 0usize;
@@ -706,7 +795,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init()).plugin(tauri_plugin_dialog::init())
         .manage(std::sync::Mutex::new(MonitorState { watcher: None }))
-        .invoke_handler(tauri::generate_handler![decrypt_kgg, get_songs, start_monitor, stop_monitor, get_kugou_dir, batch_decrypt, get_kugou_lyrics_dir, decrypt_krc, batch_decrypt_lyrics])
+        .invoke_handler(tauri::generate_handler![decrypt_kgg, decrypt_file, get_songs, start_monitor, stop_monitor, get_kugou_dir, batch_decrypt, get_kugou_lyrics_dir, decrypt_krc, batch_decrypt_lyrics])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

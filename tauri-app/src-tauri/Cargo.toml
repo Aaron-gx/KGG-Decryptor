@@ -30,4 +30,7 @@ flate2 = "1"
 
 [profile.release]
 opt-level = 3
-lto = true
+# Thin LTO keeps the optimized release build while avoiding the very high
+# peak memory usage of full-link-time optimization on Windows/MinGW.
+lto = "thin"
+codegen-units = 16
