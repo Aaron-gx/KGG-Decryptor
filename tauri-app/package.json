@@ -1,6 +1,6 @@
 {
   "name": "music-decryptor",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "音乐解密转换工具",
   "scripts": {
     "dev": "tauri dev",
