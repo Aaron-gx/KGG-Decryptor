@@ -172,7 +172,7 @@ html[data-theme="light"] .theme-toggle .moon{display:none}
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
         <p>拖拽加密文件到这里，或 <span class="link">点击选择</span></p>
         <div class="hint">支持 KGG / KGM / KGMA / VPR / NCM / KWM / QMC / 旧式 MFLAC / MGG 音乐，以及 KRC 歌词</div>
-        <input type="file" id="input" multiple accept=".kgg,.kgm,.kgma,.vpr,.ncm,.kwm,.qmc0,.qmc2,.qmc3,.qmc4,.qmc6,.qmc8,.qmcflac,.qmcogg,.tkm,.mflac,.mflac0,.mflac1,.mgg,.mgg0,.mgg1,.mggl,.krc" hidden>
+        <input type="file" id="input" multiple accept=".kgg,.kgm,.kgma,.vpr,.kge,.ncm,.kwm,.qmc0,.qmc2,.qmc3,.qmc4,.qmc6,.qmc8,.qmcflac,.qmcogg,.tkm,.mflac,.mflac0,.mflac1,.mgg,.mgg0,.mgg1,.mggl,.krc" hidden>
       </div>
       <div class="file-list" id="list"></div>
     </section>
@@ -416,7 +416,7 @@ async function processFile(file,item){
 }
 ['dragenter','dragover'].forEach(function(ev){zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.add('dragover')})});
 ['dragleave','drop'].forEach(function(ev){zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.remove('dragover')})});
-var supportedExts=['.kgg','.kgm','.kgma','.vpr','.ncm','.kwm','.qmc0','.qmc2','.qmc3','.qmc4','.qmc6','.qmc8','.qmcflac','.qmcogg','.tkm','.mflac','.mflac0','.mflac1','.mgg','.mgg0','.mgg1','.mggl','.krc'];
+var supportedExts=['.kgg','.kgm','.kgma','.vpr','.kge','.ncm','.kwm','.qmc0','.qmc2','.qmc3','.qmc4','.qmc6','.qmc8','.qmcflac','.qmcogg','.tkm','.mflac','.mflac0','.mflac1','.mgg','.mgg0','.mgg1','.mggl','.krc'];
 function isSupportedFile(f){var n=f.name.toLowerCase();return supportedExts.some(function(ext){return n.endsWith(ext)})}
 zone.addEventListener('drop',function(e){var files=[].slice.call(e.dataTransfer.files);if(!files.length)return;var supported=files.filter(isSupportedFile);if(supported.length<files.length)showToast('已忽略不支持的格式');supported.forEach(addFile)});
 zone.addEventListener('click',function(){input.click()});

@@ -34,7 +34,8 @@ pub(crate) fn decrypt_file(data: &[u8], filename: &str) -> Result<(Vec<u8>, Stri
 
     match ext.as_str() {
         "kgg" => super::decrypt_kgg_bytes(data),
-        "kgm" | "kgma" | "vpr" => decrypt_kgm(data, &ext),
+        // 酷狗概念版 .kge 是 KGM v3 容器（同 magic），走同一套 v3 解密，无需密钥
+        "kgm" | "kgma" | "vpr" | "kge" => decrypt_kgm(data, &ext),
         "ncm" => decrypt_ncm(data),
         "kwm" => decrypt_kwm(data),
         "qmc0" | "qmc2" | "qmc3" | "qmc4" | "qmc6" | "qmc8"
@@ -452,6 +453,45 @@ mod tests {
         file.extend_from_slice(&enc);
 
         let (audio, ext) = decrypt_file(&file, "song.kgm").unwrap();
+        assert_eq!(audio, plain);
+        assert_eq!(ext, "flac");
+    }
+
+    // ---- 酷狗概念版 .kge 与 .kgm 同为 KGM v3 容器，走同一套 v3 解密 ----
+
+    #[test]
+    fn kge_routes_to_kgm_v3() {
+        let mut file = vec![0u8; 0x40];
+        file[..16].copy_from_slice(&KGM_MAGIC);
+        file[0x10..0x14].copy_from_slice(&0x40u32.to_le_bytes());
+        file[0x14..0x18].copy_from_slice(&3u32.to_le_bytes());
+        file[0x18..0x1c].copy_from_slice(&1u32.to_le_bytes());
+        for (i, b) in [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                       0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0x11, 0x22].iter().enumerate() {
+            file[0x2c + i] = *b;
+        }
+        let slot = kugou_md5(&[0x6c, 0x2c, 0x2f, 0x27]);
+        let mut file_key = kugou_md5(&file[0x2c..0x3c]).to_vec();
+        file_key.push(0x6b);
+        let plain: Vec<u8> = {
+            let mut v = b"fLaC".to_vec();
+            v.extend((0..512u32).map(|i| i as u8).collect::<Vec<_>>());
+            v
+        };
+        let mut enc = plain.clone();
+        for (i, byte) in enc.iter_mut().enumerate() {
+            *byte ^= (i as u32 as u8)
+                ^ ((i as u32 >> 8) as u8)
+                ^ ((i as u32 >> 16) as u8)
+                ^ ((i as u32 >> 24) as u8);
+            *byte ^= slot[i % slot.len()];
+            let lo = *byte & 0x0f;
+            let hi = ((*byte >> 4) ^ lo) & 0x0f;
+            *byte = (hi << 4) | lo;
+            *byte ^= file_key[i % file_key.len()];
+        }
+        file.extend_from_slice(&enc);
+        let (audio, ext) = decrypt_file(&file, "song.kge").unwrap();
         assert_eq!(audio, plain);
         assert_eq!(ext, "flac");
     }

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use notify::{Watcher, RecursiveMode, Event, EventKind};
 use flate2::read::ZlibDecoder;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Emitter;
 
 mod formats;
@@ -438,18 +438,110 @@ fn wait_for_stable(path: &Path) -> bool {
 
 fn decrypt_kgg_bytes(file_data: &[u8]) -> Result<(Vec<u8>, String), String> {
     let header = parse_kgg_header(file_data)?;
-    let db_path = find_db_path().ok_or("KuGou database not found")?;
-    let db_raw = std::fs::read(&db_path).map_err(|e| e.to_string())?;
-    let db_plain = decrypt_database(&db_raw);
-    let ekey_map = extract_ekey_map(&db_plain)?;
-    let ekey = ekey_map.get(&header.audio_hash).ok_or(format!("ekey not found for hash {}", header.audio_hash))?;
-    let raw_key = derive_key(ekey)?;
+    // 优先读桌面端 KGMusicV3.db；找不到/没有 hash 时回退到安卓酷狗概念版的 MMKV 密钥库
+    let ekey = lookup_ekey(&header.audio_hash)?;
+    let raw_key = derive_key(&ekey)?;
     let cipher = QmcCipher::new(raw_key).ok_or("cipher creation failed")?;
     let mut audio = file_data[header.audio_offset..].to_vec();
     cipher.decrypt(&mut audio, 0);
     let fmt = sniff_ext(&audio).to_string();
     if fmt == "bin" { return Err("unrecognized audio format".into()); }
     Ok((audio, fmt))
+}
+
+/// 解析酷狗概念版安卓端的 MMKV 密钥文件 `mggkey_multi_process`。
+/// 内容为 mggHash(EncryptionKeyId) -> ekey(EncryptionKey) 的键值对。
+/// MMKV 存储格式：每项为 [32位hex hash][varint 长度][varint 字符串长度][字符串]。
+fn parse_mmkv_ekey_map(data: &[u8]) -> HashMap<String, String> {
+    fn read_varint(d: &[u8], at: usize) -> Option<(u64, usize)> {
+        let mut val: u64 = 0; let mut shift = 0; let mut i = at;
+        loop {
+            let b = *d.get(i)?;
+            val |= ((b & 0x7f) as u64) << shift;
+            i += 1;
+            if b & 0x80 == 0 { break; }
+            shift += 7;
+            if shift > 63 { return None; }
+        }
+        Some((val, i))
+    }
+    let mut map = HashMap::new();
+    let mut i = 0usize;
+    while i + 32 <= data.len() {
+        let chunk = &data[i..i + 32];
+        if chunk.iter().all(|b| b.is_ascii_hexdigit()) {
+            if let Ok(h) = std::str::from_utf8(chunk) {
+                let h = h.to_ascii_lowercase();
+                // skip first varint (entry size), then read string length + string
+                if let Some((_, p)) = read_varint(data, i + 32) {
+                    if let Some((len, p2)) = read_varint(data, p) {
+                        let len = len as usize;
+                        if p2 + len <= data.len() {
+                            let s = &data[p2..p2 + len];
+                            if s.iter().all(|b| b.is_ascii() || *b == 0) {
+                                let val = String::from_utf8_lossy(s).trim_end_matches('\0').to_string();
+                                if !val.is_empty() && val.len() > 16 {
+                                    map.insert(h.clone(), val);
+                                    i = p2 + len;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    map
+}
+
+/// 在 exe 同目录 / tools / 上一级 / APPDATA 下查找安卓密钥库或桌面密钥库。
+fn find_keyfile(name: &str) -> Option<PathBuf> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut candidates = vec![
+        cwd.clone(),
+        cwd.join("tools"),
+        cwd.join(".."),
+        cwd.join("../.."),
+    ];
+    for var in ["APPDATA", "LOCALAPPDATA"] {
+        if let Ok(base) = std::env::var(var) {
+            candidates.push(PathBuf::from(&base).join("KuGou8"));
+            candidates.push(PathBuf::from(&base).join("KuGou"));
+        }
+    }
+    for dir in &candidates {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.file_name().map_or(false, |n| n.to_string_lossy() == name) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 根据 audio_hash 查 ekey：桌面 KGMusicV3.db → 安卓 MMKV mggkey_multi_process。
+fn lookup_ekey(audio_hash: &str) -> Result<String, String> {
+    if let Some(db_path) = find_db_path() {
+        let db_raw = std::fs::read(&db_path).map_err(|e| format!("读取 KGMusicV3.db 失败: {e}"))?;
+        let db_plain = decrypt_database(&db_raw);
+        let ekey_map = extract_ekey_map(&db_plain)?;
+        if let Some(ek) = ekey_map.get(audio_hash) {
+            return Ok(ek.clone());
+        }
+    }
+    if let Some(mmkv_path) = find_keyfile("mggkey_multi_process") {
+        let raw = std::fs::read(&mmkv_path).map_err(|e| format!("读取 mggkey_multi_process 失败: {e}"))?;
+        let map = parse_mmkv_ekey_map(&raw);
+        if let Some(ek) = map.get(audio_hash) {
+            return Ok(ek.clone());
+        }
+    }
+    Err(format!("ekey not found for hash {audio_hash}（未找到 KGMusicV3.db 或 mggkey_multi_process）"))
 }
 
 fn find_kugou_download_dir() -> Option<String> {
@@ -798,4 +890,47 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![decrypt_kgg, decrypt_file, get_songs, start_monitor, stop_monitor, get_kugou_dir, batch_decrypt, get_kugou_lyrics_dir, decrypt_krc, batch_decrypt_lyrics])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_varint(out: &mut Vec<u8>, mut v: u64) {
+        loop {
+            let mut b = (v & 0x7f) as u8;
+            v >>= 7;
+            if v != 0 { b |= 0x80; }
+            out.push(b);
+            if v == 0 { break; }
+        }
+    }
+
+    fn build_mmkv(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(&[0x10, 0x20, 0x30, 0x40]); // header junk
+        for (h, val) in entries {
+            d.extend_from_slice(h.as_bytes()); // 32-byte hash
+            let vb = val.as_bytes();
+            // inner varint = string length, outer varint = inner varint bytes + string len
+            let mut inner = Vec::new();
+            write_varint(&mut inner, vb.len() as u64);
+            let outer_len = inner.len() + vb.len();
+            write_varint(&mut d, outer_len as u64);
+            d.extend_from_slice(&inner);
+            d.extend_from_slice(vb);
+        }
+        d
+    }
+
+    #[test]
+    fn mmkv_parse_extracts_hash_ekey_map() {
+        let data = build_mmkv(&[
+            ("a0ecaf4a296ba889e48f3ffb01d70a8d", "YWJjZGVmZ2hpamtsbW5vcA=="),
+            ("11111111111111111111111111111111", "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo="),
+        ]);
+        let map = parse_mmkv_ekey_map(&data);
+        assert_eq!(map.get("a0ecaf4a296ba889e48f3ffb01d70a8d"), Some(&"YWJjZGVmZ2hpamtsbW5vcA==".to_string()));
+        assert_eq!(map.get("11111111111111111111111111111111"), Some(&"YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=".to_string()));
+    }
 }
