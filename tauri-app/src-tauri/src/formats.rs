@@ -27,7 +27,18 @@ const NCM_CORE_KEY: [u8; 16] = [
 ];
 
 pub(crate) fn decrypt_file(data: &[u8], filename: &str) -> Result<(Vec<u8>, String), String> {
-    let ext = filename
+    // Strip a trailing audio-format suffix left by the mobile client (e.g. "xxx.kgg.flac").
+    let base = filename
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .filter(|e| matches!(e.as_str(), "mp3" | "flac" | "ogg" | "m4a" | "aac" | "wav" | "dff"))
+        .map(|_| {
+            filename
+                .strip_suffix(&filename[filename.rfind('.').unwrap()..])
+                .unwrap_or(filename)
+        })
+        .unwrap_or(filename);
+    let ext = base
         .rsplit_once('.')
         .map(|(_, e)| e.to_ascii_lowercase())
         .unwrap_or_default();
