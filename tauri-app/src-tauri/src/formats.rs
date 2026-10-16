@@ -27,7 +27,7 @@ const NCM_CORE_KEY: [u8; 16] = [
 ];
 
 pub(crate) fn decrypt_file(data: &[u8], filename: &str) -> Result<(Vec<u8>, String), String> {
-    // Strip a trailing audio-format suffix left by the mobile client (e.g. "xxx.kgg.flac").
+    // 手机客户端会给文件追加音频后缀（如 "xxx.kgg.flac"），先剥掉这层再匹配真实扩展名。
     let base = filename
         .rsplit_once('.')
         .map(|(_, e)| e.to_ascii_lowercase())
@@ -194,11 +194,10 @@ fn decrypt_ncm(data: &[u8]) -> Result<(Vec<u8>, String), String> {
     offset = offset.checked_add(4).and_then(|v| v.checked_add(meta_len)).ok_or("NCM 元数据长度溢出")?;
     if offset > data.len() { return Err("NCM 元数据不完整".into()); }
 
-    // Cover frame per the real NCM layout (unlock-music ncm.go, ncmdump.rs):
-    // [5-byte gap][frameLen:4][imageLen:4][image][crc32:4][audio], where
-    // frameLen counts the imageLen field + image bytes; the trailing crc32 is
-    // skipped via the explicit +4. We must land exactly on the audio payload
-    // or the keystream XOR desynchronizes.
+    // 封面帧布局（参照 unlock-music ncm.go / ncmdump.rs）：
+    // [5字节间隔][frameLen:4][imageLen:4][图片数据][crc32:4][音频数据]，
+    // 其中 frameLen = imageLen 字段 + 图片字节数，末尾的 crc32 用 +4 显式跳过。
+    // 必须精确落在音频载荷上，否则密钥流 XOR 会错位。
     offset = offset.checked_add(5).ok_or("NCM 封面帧偏移溢出")?;
     let frame_len = read_u32_le(data, offset)? as usize;
     let audio_start = offset
@@ -273,9 +272,9 @@ fn decrypt_qmc(data: &[u8]) -> Result<(Vec<u8>, String), String> {
                 .ok_or("QTag ekey 无效")?;
             (audio_len, cipher)
     } else {
-            // Legacy ekey tail: [ekey text][u32 LE length].  unlock-music
-            // accepts lengths up to 0xFFFF and trims trailing NUL padding;
-            // some QQ Music builds pad the ekey field to a fixed size.
+            // 旧式 ekey 尾部：[ekey 文本][u32 LE 长度]。unlock-music
+            // 接受最大 0xFFFF 的长度并裁掉尾部 NUL 填充；
+            // 部分 QQ 音乐版本会把 ekey 字段填充到固定长度。
             let key_len = u32::from_le_bytes(last4.try_into().unwrap()) as usize;
             if key_len > 0 && key_len <= 0xFFFF {
                 let audio_len = data.len().checked_sub(4 + key_len).ok_or("QMC 密钥长度无效")?;
@@ -341,7 +340,7 @@ mod tests {
     }
 
     // ---- NCM: build a file with the real container layout and decrypt it ----
-    // Layout (unlock-music ncm.go / ncmdump.rs):
+    // 布局（参照 unlock-music ncm.go / ncmdump.rs）：
     //   CTENFDAM(8) gap(2) keyLen(4) key metaLen(4) meta gap(5)
     //   frameLen(4) imageLen(4) image crc32(4) audio
     //   frameLen = 4 + imageLen; audio starts at frameLenField + 8 + frameLen.
@@ -418,14 +417,13 @@ mod tests {
     #[test]
     fn ncm_truncated_file_is_rejected() {
         let file = build_ncm();
-        // cut inside the key blob -> must error cleanly, not panic
+        // 在密钥数据中间截断 → 必须干净地报错，不能 panic
         let err = decrypt_ncm(&file[..30]).unwrap_err();
         assert!(!err.is_empty());
     }
 
-    // ---- KGM v3: the XOR chain is decrypted in the order
-    // fileKey / b<<4 / slot / offset-collapse, so encryption must run the
-    // inverse chain (`b ^= b<<4` is not an involution). ----
+    // ---- KGM v3：XOR 链按 fileKey / b<<4 / slot / 偏移折叠 的顺序解密，
+    // 因此加密必须按逆序执行（`b ^= b<<4` 不是对合运算）。----
 
     #[test]
     fn kgm_v3_round_trip() {
@@ -455,7 +453,7 @@ mod tests {
                 ^ ((i as u32 >> 16) as u8)
                 ^ ((i as u32 >> 24) as u8);
             *byte ^= slot[i % slot.len()];
-            // inverse of b ^= b<<4: low nibble unchanged, high nibble XOR low
+            // b ^= b<<4 的逆运算：低半字节不变，高半字节异或低半字节
             let lo = *byte & 0x0f;
             let hi = ((*byte >> 4) ^ lo) & 0x0f;
             *byte = (hi << 4) | lo;

@@ -418,8 +418,7 @@ async function processFile(file,item){
 ['dragleave','drop'].forEach(function(ev){zone.addEventListener(ev,function(e){e.preventDefault();zone.classList.remove('dragover')})});
 var supportedExts=['.kgg','.kgm','.kgma','.vpr','.kge','.ncm','.kwm','.qmc0','.qmc2','.qmc3','.qmc4','.qmc6','.qmc8','.qmcflac','.qmcogg','.tkm','.mflac','.mflac0','.mflac1','.mgg','.mgg0','.mgg1','.mggl','.krc'];
 function isSupportedFile(f){var n=f.name.toLowerCase();if(supportedExts.some(function(ext){return n.endsWith(ext)}))return true;
-  // Android concept client writes double extensions like ".kgg.flac": strip the trailing
-  // audio suffix (added when the download completes) and re-test the inner extension.
+  // 安卓概念版客户端会写双扩展名文件（如 ".kgg.flac"）：剥掉末尾音频后缀后再测内层扩展名。
   var m=n.match(/\.(mp3|flac|ogg|m4a|aac|wav|dff)$/i);
   if(m){var inner=n.slice(0,n.length-m[0].length);return supportedExts.some(function(ext){return inner.endsWith(ext)})}
   return false}

@@ -1,10 +1,10 @@
 # KGG Decryptor
 
-KGG Decryptor 是一个基于 Tauri 2 的本地音乐格式转换工具。它可以读取本机客户端已经具备播放条件的文件，将 KGG、KGM、KGMA、VPR、NCM、KWM、传统 QMC 以及旧式 MFLAC/MGG 音乐转换为 MP3 / FLAC / OGG / WAV / AAC / M4A / WMA / DFF，并支持 KRC 加密歌词转换（单个或批量）为标准 LRC。
+KGG Decryptor 是一个基于 Tauri 2 的本地音乐格式转换工具。它可以读取本机客户端已经具备播放条件的文件，将 KGG、KGE（酷狗概念版缓存）、KGM、KGMA、VPR、NCM、KWM、传统 QMC 以及旧式 MFLAC/MGG 音乐转换为 MP3 / FLAC / OGG / WAV / AAC / M4A / WMA / DFF，并支持 KRC 加密歌词转换（单个或批量）为标准 LRC。
 
 > 本项目只处理你本机已经具备播放和下载条件的文件，不提供绕过会员、绕过授权或在线破解能力。
 
-## Preview
+## 预览
 
 
 ### 主界面 — 手动解密（日间模式）
@@ -32,7 +32,7 @@ KGG Decryptor 是一个基于 Tauri 2 的本地音乐格式转换工具。它可
 
 ![夜间模式](docs/screenshots/app-dark.png)
 
-## Features
+## 功能
 
 应用采用侧边栏导航，分为四个功能页面：
 
@@ -66,13 +66,15 @@ KGG Decryptor 是一个基于 Tauri 2 的本地音乐格式转换工具。它可
 - 日间 / 夜间双主题，一键切换，自动记住选择（默认日间）。
 - 所有解密、转换、数据库读取均在本地完成，不上传任何数据。
 
-## Important
+## 使用前提
 
 KGG、KGM v5 和部分 KGMA 文件转换依赖酷狗客户端写入本地数据库的解密密钥，因此使用前需要满足以下条件：
 
 1. 你是酷狗会员，且已在酷狗客户端中成功下载过目标歌曲。
 2. 酷狗客户端已在本地 `KGMusicV3.db` 数据库中写入该歌曲对应的 `eKey`。
 3. 本工具能读取到本机的酷狗数据库和目标 KGG 文件。
+
+**安卓酷狗概念版**（KugouYoung）用户：`.kge` 标准音质缓存文件无需任何密钥，直接拖入即可解密；`.kgg` / `.kgg.flac` VIP 文件的密钥存放在 `/data/data/com.kugou.android.lite/files/mmkv/mggkey_multi_process`（需要 root 权限取出），把它和加密文件放在 exe 同目录即可自动识别。
 
 简单说：酷狗客户端已经能在本机播放、且已经下载过的歌，本工具才有机会转换；数据库中没有对应密钥的文件无法解密。
 
@@ -82,7 +84,8 @@ KRC 歌词转换不依赖数据库密钥。KRC 文件以 `krc1` 魔术头开头�
 
 | 后缀 | 来源 | 密钥要求 |
 |---|---|---|
-| `.kgg` | 酷狗 Hi-Res | 本机 `KGMusicV3.db` |
+| `.kgg` | 酷狗 Hi-Res | 本机 `KGMusicV3.db`，或安卓概念版 `mggkey_multi_process` |
+| `.kge` | 酷狗概念版缓存 | 无需密钥（KGM v3 固定算法） |
 | `.kgm` / `.kgma` / `.vpr` | 酷狗 | v5 版本需要 `KGMusicV3.db`，v3 可离线处理 |
 | `.ncm` | 网易云音乐 | 文件内置密钥 |
 | `.kwm` | 酷我音乐 | 文件内置密钥 |
@@ -91,7 +94,7 @@ KRC 歌词转换不依赖数据库密钥。KRC 文件以 `krc1` 魔术头开头�
 | `.mflac/.mflac0/.mflac1` / `.mgg/.mgg0/.mgg1/.mggl` | QQ 音乐 | 旧式尾部 ekey 可离线处理；新版 `musicex` 暂不联网取钥 |
 | `.krc` | 酷狗歌词 | 固定 XOR + zlib |
 
-## How It Works
+## 工作原理
 
 所有加密格式由 `formats.rs` 统一分发：按扩展名路由到对应解码器，解密后根据文件头魔术字节识别真实音频格式并输出。
 
@@ -114,6 +117,22 @@ eKey 经 TEA + Base64 多层推导 -> 得到原始密钥
        |
        v
 根据文件头识别格式 -> 输出 MP3 / FLAC / OGG / WAV 等
+```
+
+安卓酷狗概念版（KugouYoung）的密钥来源不同：
+
+```text
+概念版客户端下载歌曲（在线从 tracker.kugou.com/v6/get_ekey 获取 ekey）
+       |
+       v
+ekey 写入本机 MMKV 文件 mggkey_multi_process（hash -> ekey 键值对）
+       |
+       v
+root 后取出该文件，放 exe 同目录
+       |
+       v
+.kge 缓存文件无需密钥直接解密（KGM v3 固定算法）
+.kgg / .kgg.flac 文件按 audio_hash 查 MMKV 中的 ekey 解密
 ```
 
 不依赖数据库的格式则直接解密：KGM v3 / VPR 使用内置 XOR 链，NCM / KWM 使用文件内置密钥，传统 QMC 与旧式 MFLAC / MGG 使用静态掩码或尾部 ekey（与 unlock-music 算法兼容，musicex 新版明确拒绝离线取钥）。
@@ -141,7 +160,7 @@ KRC 文件（krc1 魔术头）
 - 解密算法根据密钥长度选择 MapCipher 或 RC4Cipher。
 - 输出格式通过音频文件头魔术字节自动判断，例如 `ID3`、`fLaC`、`OggS`。
 
-## Tech Stack
+## 技术栈
 
 - Tauri 2：桌面应用框架。
 - Rust：后端解密、文件监听、数据库读取和批量转换逻辑。
@@ -151,7 +170,7 @@ KRC 文件（krc1 魔术头）
 - notify：监听文件系统变更。
 - flate2：解压 KRC 歌词内容。
 
-## Project Structure
+## 项目结构
 
 ```text
 .
@@ -180,22 +199,22 @@ KRC 文件（krc1 魔术头）
 
 项目中的 `node_modules/`、`dist/`、`src-tauri/target/`、本地数据库和音频文件都属于本地依赖或构建/个人数据，已通过 `.gitignore` 排除。
 
-## Development
+## 开发
 
-### Requirements
+### 环境要求
 
 - Node.js 18+
 - Rust stable
 - Windows C/C++ 编译环境（MSVC 或 MinGW）
 
-### Install
+### 安装依赖
 
 ```bash
 cd tauri-app
 npm install
 ```
 
-### Run In Development
+### 开发模式运行
 
 Windows 下可直接双击项目根目录的 `dev.bat`（自动处理中文路径和自定义 Rust 安装路径的情况）。
 
@@ -208,7 +227,7 @@ npm run dev
 
 > 注意：如果你的项目路径包含中文或全角字符，且使用 MinGW (GNU) 工具链，链接器可能报错。此时请在纯英文路径下构建，或使用 MSVC 工具链。
 
-### Build Installer
+### 构建安装包
 
 ```bash
 cd tauri-app
@@ -219,7 +238,7 @@ npm run build
 
 `release-assets/` 存放各版本的便携版 EXE 与安装包（本地目录，不进 Git）：v1.2.0 起包含 KGM/KGMA/VPR、NCM、KWM、QMC 系列与旧式 MFLAC/MGG 支持。
 
-## Usage
+## 使用方法
 
 1. 确认客户端已在本机下载目标歌曲（仅 KGG / KGM v5 / 部分 KGMA 需要数据库密钥，其余格式开箱即用）。
 2. **手动解密**：拖拽受支持的加密音乐或 KRC 文件到窗口中，立即转换并保存。
@@ -227,11 +246,11 @@ npm run build
 4. **批量工具**：批量解密选择加密音乐所在文件夹；歌词转换选择 KRC 目录和 LRC 输出目录。
 5. **歌曲库**：查看本地数据库中已下载歌曲的音质与密钥状态。
 
-## Limitations
+## 已知限制
 
 - 当前主要面向 Windows 环境。
 - 新版 QQ MusicEx MFLAC/MGG 需要 QQ 音乐会话取钥，当前版本明确拒绝此类联网取钥。
-- KGG 和 KGM v5 转换必须依赖本地数据库中的对应密钥；KRC 歌词转换无此限制。
+- KGG 和 KGM v5 转换必须依赖本地数据库中的对应密钥（桌面端 `KGMusicV3.db` 或安卓概念版 `mggkey_multi_process`）；KRC 歌词转换无此限制。
 - 如果酷狗更新加密方案，相关解析逻辑可能需要同步调整。
 
 ## License

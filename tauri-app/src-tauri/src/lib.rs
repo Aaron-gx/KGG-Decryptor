@@ -472,7 +472,7 @@ fn parse_mmkv_ekey_map(data: &[u8]) -> HashMap<String, String> {
         if chunk.iter().all(|b| b.is_ascii_hexdigit()) {
             if let Ok(h) = std::str::from_utf8(chunk) {
                 let h = h.to_ascii_lowercase();
-                // skip first varint (entry size), then read string length + string
+                // 跳过第一个 varint（整项长度），再读第二个 varint 作为字符串长度
                 if let Some((_, p)) = read_varint(data, i + 32) {
                     if let Some((len, p2)) = read_varint(data, p) {
                         let len = len as usize;
@@ -576,18 +576,18 @@ fn decrypt_krc_bytes(data: &[u8]) -> Result<String, String> {
     Ok(krc_to_lrc(&output))
 }
 
-/// Convert KRC internal format to standard LRC.
-/// Strips word-level timing tags, converts [ms,duration] to [mm:ss.xx],
-/// filters non-standard metadata, removes BOM.
+/// 将 KRC 内部格式转为标准 LRC。
+/// 剥掉逐字时间标签、把 [毫秒,持续] 转成 [分:秒.厘秒]、
+/// 过滤非标准元数据、去 BOM。
 fn krc_to_lrc(krc: &str) -> String {
     let krc = krc.strip_prefix('\u{feff}').unwrap_or(krc);
     let allowed_meta = ["[ti:", "[ar:", "[al:", "[by:", "[offset:"];
     let mut out = String::with_capacity(krc.len());
     for line in krc.lines() {
         if line.is_empty() { continue; }
-        // Lyric line: [start_ms,duration_ms]<word...>text<word...>text...
+        // 歌词行：[起始毫秒,持续毫秒]<逐字标签...>文本<逐字标签...>文本...
         if line.starts_with('[') && line[1..].chars().next().map_or(false, |c| c.is_ascii_digit()) {
-            // Check for [digits,digits] format
+            // 检查 [数字,数字] 格式
             if let Some(close) = line.find(']') {
                 let tag = &line[1..close];
                 let rest = &line[close + 1..];
@@ -595,27 +595,27 @@ fn krc_to_lrc(krc: &str) -> String {
                     if let Ok(start_ms) = tag[..comma].parse::<u64>() {
                         let mm = start_ms / 60000;
                         let ss = (start_ms % 60000) as f64 / 1000.0;
-                        // Strip word-level tags <digits,digits,digits>
+                        // 剥掉逐字时间标签 <数字,数字,数字>
                         let text = strip_word_tags(rest);
                         out.push_str(&format!("[{:02}:{:05.2}]{}\n", mm, ss, text));
                         continue;
                     }
                 }
-                // Metadata tag like [ar:xxx] — keep only standard ones
+                // 元数据标签如 [ar:xxx] —— 只保留标准项
                 if allowed_meta.iter().any(|m| line.starts_with(m)) {
                     out.push_str(line);
                     out.push('\n');
                 }
-                // Non-standard tags (id, hash, sign, qq, total, language, manualoffset) are dropped
+                // 非标准标签（id、hash、sign、qq、total、language、manualoffset）直接丢弃
             }
         } else if line.starts_with('[') {
-            // Metadata tag
+            // 元数据标签
             if allowed_meta.iter().any(|m| line.starts_with(m)) {
                 out.push_str(line);
                 out.push('\n');
             }
         } else if !line.is_empty() {
-            // Plain text without tags — keep as-is
+            // 不带标签的纯文本 —— 原样保留
             out.push_str(line);
             out.push('\n');
         }
@@ -623,13 +623,13 @@ fn krc_to_lrc(krc: &str) -> String {
     out
 }
 
-/// Remove <digits,digits,digits> word-level timing tags, keeping only text.
+/// 去掉 <数字,数字,数字> 逐字时间标签，只保留文本。
 fn strip_word_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '<' {
-            // Skip until matching >
+            // 跳到匹配的 > 为止
             for c2 in chars.by_ref() {
                 if c2 == '>' { break; }
             }
@@ -680,8 +680,8 @@ fn decrypt_kgg(file_data: Vec<u8>, filename: String) -> Result<DecryptResultData
     Ok(DecryptResultData { audio, format: fmt, title })
 }
 
-/// Unified decoder entry point used by the expanded UI.  The old
-/// `decrypt_kgg` command remains as a compatibility alias for older frontends.
+/// 扩展界面使用的统一解码入口。
+/// 旧的 `decrypt_kgg` 命令保留为兼容旧前端的别名。
 #[tauri::command]
 fn decrypt_file(file_data: Vec<u8>, filename: String) -> Result<DecryptResultData, String> {
     let (audio, fmt) = formats::decrypt_file(&file_data, &filename)?;
@@ -912,7 +912,7 @@ mod tests {
         for (h, val) in entries {
             d.extend_from_slice(h.as_bytes()); // 32-byte hash
             let vb = val.as_bytes();
-            // inner varint = string length, outer varint = inner varint bytes + string len
+            // 内层 varint 是字符串长度，外层 varint = 内层 varint 占的字节数 + 字符串长度
             let mut inner = Vec::new();
             write_varint(&mut inner, vb.len() as u64);
             let outer_len = inner.len() + vb.len();
