@@ -27,6 +27,14 @@ const NCM_CORE_KEY: [u8; 16] = [
 ];
 
 pub(crate) fn decrypt_file(data: &[u8], filename: &str) -> Result<(Vec<u8>, String), String> {
+    decrypt_file_with_keys(data, filename, &super::AudioKeyCache::default())
+}
+
+pub(super) fn decrypt_file_with_keys(
+    data: &[u8],
+    filename: &str,
+    keys: &super::AudioKeyCache,
+) -> Result<(Vec<u8>, String), String> {
     // 手机客户端会给文件追加音频后缀（如 "xxx.kgg.flac"），先剥掉这层再匹配真实扩展名。
     let base = filename
         .rsplit_once('.')
@@ -44,9 +52,9 @@ pub(crate) fn decrypt_file(data: &[u8], filename: &str) -> Result<(Vec<u8>, Stri
         .unwrap_or_default();
 
     match ext.as_str() {
-        "kgg" => super::decrypt_kgg_bytes(data),
+        "kgg" => super::decrypt_kgg_bytes(data, keys),
         // 酷狗概念版 .kge 是 KGM v3 容器（同 magic），走同一套 v3 解密，无需密钥
-        "kgm" | "kgma" | "vpr" | "kge" => decrypt_kgm(data, &ext),
+        "kgm" | "kgma" | "vpr" | "kge" => decrypt_kgm(data, &ext, keys),
         "ncm" => decrypt_ncm(data),
         "kwm" => decrypt_kwm(data),
         "qmc0" | "qmc2" | "qmc3" | "qmc4" | "qmc6" | "qmc8"
@@ -73,7 +81,7 @@ fn read_u32_le(data: &[u8], at: usize) -> Result<u32, String> {
         .and_then(|b| Ok(u32::from_le_bytes(b.try_into().unwrap())))
 }
 
-fn decrypt_kgm(data: &[u8], ext: &str) -> Result<(Vec<u8>, String), String> {
+fn decrypt_kgm(data: &[u8], ext: &str, keys: &super::AudioKeyCache) -> Result<(Vec<u8>, String), String> {
     if data.len() < 0x44 || (!data.starts_with(&KGM_MAGIC) && !data.starts_with(&VPR_MAGIC)) {
         return Err(format!("无效的 .{} 文件头", ext));
     }
@@ -100,11 +108,8 @@ fn decrypt_kgm(data: &[u8], ext: &str) -> Result<(Vec<u8>, String), String> {
                 return Err("KGM audio hash 无效".into());
             }
             let hash = String::from_utf8_lossy(&data[0x48..hash_end]).trim_end_matches('\0').to_string();
-            let db = super::find_db_path().ok_or("未找到 KGMusicV3.db（KGM v5 需要本地密钥库）")?;
-            let raw_db = std::fs::read(&db).map_err(|e| format!("读取 KGMusicV3.db 失败: {e}"))?;
-            let plain_db = super::decrypt_database(&raw_db);
-            let keys = super::extract_ekey_map(&plain_db)?;
-            let ekey = keys.get(&hash).ok_or_else(|| format!("数据库中没有 audio_hash={hash} 的 ekey"))?;
+            let desktop_keys = keys.desktop_keys()?.ok_or("未找到 KGMusicV3.db（KGM v5 需要本地密钥库）")?;
+            let ekey = desktop_keys.get(&hash).ok_or_else(|| format!("数据库中没有 audio_hash={hash} 的 ekey"))?;
             let cipher = super::QmcCipher::new(super::derive_key(ekey)?)
                 .ok_or("KGM v5 ekey 无法建立解密器")?;
             cipher.decrypt(&mut audio, 0);

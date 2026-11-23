@@ -63,6 +63,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",sans
 .btn-action:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(140,92,230,0.35)}
 .btn-action:disabled{opacity:0.5;cursor:not-allowed;transform:none}
 .btn-action svg{width:14px;height:14px}
+.batch-progress{margin-top:14px}
+.batch-progress progress{display:block;width:100%;height:12px;accent-color:var(--accent-2)}
+.batch-progress-meta{display:flex;justify-content:space-between;gap:6px 16px;flex-wrap:wrap;margin-top:6px;color:var(--text-secondary);font-size:12px}
+.batch-progress-file{margin-top:4px;color:var(--text-muted);font-size:12px;overflow-wrap:anywhere}
 .activity-feed{margin-top:12px;max-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
 .activity-feed:empty{display:none}
 .activity-item{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg-card);border-radius:var(--radius-sm);font-size:13px;animation:slideIn 0.2s ease}
@@ -219,9 +223,14 @@ html[data-theme="light"] .theme-toggle .moon{display:none}
         <div class="card-header">
           <div class="card-left">
             <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
-            <div><div class="card-title">批量解密音乐</div><div class="card-status" id="batchStatus">解密文件夹内所有受支持的音乐格式</div></div>
+            <div><div class="card-title">批量解密音乐</div><div class="card-status" id="batchStatus" role="status">请在「自动监控」页设置不同的监听目录和输出目录</div></div>
           </div>
           <button class="btn-action" id="batchBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>开始</button>
+        </div>
+        <div class="batch-progress" id="batchProgress" hidden>
+          <progress id="batchProgressBar" aria-label="批量解密进度" aria-describedby="batchProgressCount"></progress>
+          <div class="batch-progress-meta"><span id="batchProgressCount"></span><span id="batchProgressOutcome"></span></div>
+          <div class="batch-progress-file" id="batchProgressFile"></div>
         </div>
       </div>
       <div class="card" id="lyricCard">
@@ -275,7 +284,9 @@ var zone=document.getElementById('zone'),input=document.getElementById('input'),
 var monToggle=document.getElementById('monToggle'),monCard=document.getElementById('monCard'),monStatus=document.getElementById('monStatus'),monFeed=document.getElementById('monFeed'),navMonitor=document.getElementById('navMonitor');
 var watchInput=document.getElementById('watchInput'),outputInput=document.getElementById('outputInput'),watchBrowse=document.getElementById('watchBrowse'),outputBrowse=document.getElementById('outputBrowse');
 var batchBtn=document.getElementById('batchBtn'),batchStatus=document.getElementById('batchStatus');
-var monitorOn=false, batchRunning=false;
+var batchProgress=document.getElementById('batchProgress'),batchProgressBar=document.getElementById('batchProgressBar');
+var batchProgressCount=document.getElementById('batchProgressCount'),batchProgressOutcome=document.getElementById('batchProgressOutcome'),batchProgressFile=document.getElementById('batchProgressFile');
+var monitorOn=false, activeBatchJobId=null;
 
 /* ---- View switching ---- */
 var navItems=[].slice.call(document.querySelectorAll('.nav-item'));
@@ -299,7 +310,10 @@ function loadPaths(){try{watchInput.value=localStorage.getItem('watchDir')||'';o
 function addActivity(type,name,msg){
   var item=document.createElement('div');item.className='activity-item';
   var dotClass=type==='success'?'success':type==='error'?'error':'detect';
-  item.innerHTML='<div class="activity-dot '+dotClass+'"></div><div class="name">'+name+'</div><div class="msg">'+msg+'</div>';
+  var dot=document.createElement('div');dot.className='activity-dot '+dotClass;
+  var nameEl=document.createElement('div');nameEl.className='name';nameEl.textContent=name;
+  var msgEl=document.createElement('div');msgEl.className='msg';msgEl.textContent=msg;
+  item.append(dot,nameEl,msgEl);
   monFeed.insertBefore(item,monFeed.firstChild);
   while(monFeed.children.length>20){monFeed.removeChild(monFeed.lastChild)}
 }
@@ -338,23 +352,52 @@ monToggle.addEventListener('click',async function(){
 });
 
 // ---- Batch decrypt ----
+function compareBatchPaths(path){
+  if(/Windows/i.test(navigator.userAgent)){
+    return path.replace(/\//g,'\\').replace(/\\+$/,'').toLowerCase();
+  }
+  return path.replace(/\/+$/,'');
+}
+function showBatchProgress(processed,total,succeeded,failed,currentFile){
+  batchProgressBar.max=Math.max(total,1);
+  batchProgressBar.value=processed;
+  batchProgressCount.textContent='已处理 '+processed+' / '+total;
+  batchProgressOutcome.textContent='成功 '+succeeded+' · 失败 '+failed;
+  batchProgressFile.textContent=currentFile?'最近处理：'+currentFile:'';
+}
 batchBtn.addEventListener('click',async function(){
   if(!isTauri){showToast('请使用桌面版');return}
-  if(batchRunning)return;
+  if(activeBatchJobId!==null)return;
   var id=watchInput.value.trim(),od=outputInput.value.trim();
   if(!id){showToast('请先在「自动监控」页设置监听目录');return}
-  if(!od){od=id}
-  batchRunning=true;batchBtn.disabled=true;batchStatus.textContent='处理中...';
+  if(!od){showToast('请先在「自动监控」页设置独立的输出目录');return}
+  if(compareBatchPaths(id)===compareBatchPaths(od)){showToast('输出目录不能与监听目录相同');return}
+  var jobId=Array.from(crypto.getRandomValues(new Uint8Array(16)),function(b){return b.toString(16).padStart(2,'0')}).join('');
+  var unlisten,processed=-1;
+  activeBatchJobId=jobId;batchBtn.disabled=true;batchStatus.textContent='正在准备批量任务…';
+  batchProgress.hidden=false;batchProgressBar.removeAttribute('value');
+  batchProgressCount.textContent='正在统计文件…';batchProgressOutcome.textContent='';batchProgressFile.textContent='';
   monFeed.innerHTML='';
   try{
-    var r=await invoke('batch_decrypt',{inputDir:id,outputDir:od});
-    batchStatus.textContent='完成: '+r.succeeded+'/'+r.total+'成功'+(r.failed>0?', '+r.failed+'失败':'');
+    unlisten=await window.__TAURI__.event.listen('batch-progress',function(ev){
+      var p=ev.payload;
+      if(!p||p.jobId!==activeBatchJobId||p.jobId!==jobId||p.processed<=processed)return;
+      processed=p.processed;
+      showBatchProgress(p.processed,p.total,p.succeeded,p.failed,p.currentFile);
+    });
+    batchStatus.textContent='批量处理中…';
+    var r=await invoke('batch_decrypt',{inputDir:id,outputDir:od,jobId:jobId});
+    showBatchProgress(r.succeeded+r.failed,r.total,r.succeeded,r.failed,'');
+    batchStatus.textContent=r.total?'批量解密完成':'没有找到可转换的音乐文件';
     showToast('批量解密完成: '+r.succeeded+'成功, '+r.failed+'失败');
   }catch(e){
     batchStatus.textContent='失败: '+e;
+    if(processed<0){batchProgress.hidden=true}
     showToast('批量解密失败: '+e);
+  }finally{
+    activeBatchJobId=null;batchBtn.disabled=false;
+    if(unlisten){unlisten()}
   }
-  batchRunning=false;batchBtn.disabled=false;
 });
 
 // ---- Lyrics conversion ----

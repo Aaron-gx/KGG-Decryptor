@@ -5,10 +5,11 @@ use cipher::{block_padding::NoPadding, BlockDecryptMut, KeyIvInit};
 use md5::{Md5, Digest};
 use rusqlite::Connection;
 use base64::Engine;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use notify::{Watcher, RecursiveMode, Event, EventKind};
 use flate2::read::ZlibDecoder;
-use std::io::Read;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use tauri::Emitter;
 
@@ -436,11 +437,11 @@ fn wait_for_stable(path: &Path) -> bool {
     false
 }
 
-fn decrypt_kgg_bytes(file_data: &[u8]) -> Result<(Vec<u8>, String), String> {
+fn decrypt_kgg_bytes(file_data: &[u8], keys: &AudioKeyCache) -> Result<(Vec<u8>, String), String> {
     let header = parse_kgg_header(file_data)?;
     // 优先读桌面端 KGMusicV3.db；找不到/没有 hash 时回退到安卓酷狗概念版的 MMKV 密钥库
-    let ekey = lookup_ekey(&header.audio_hash)?;
-    let raw_key = derive_key(&ekey)?;
+    let ekey = keys.lookup_ekey(&header.audio_hash)?;
+    let raw_key = derive_key(ekey)?;
     let cipher = QmcCipher::new(raw_key).ok_or("cipher creation failed")?;
     let mut audio = file_data[header.audio_offset..].to_vec();
     cipher.decrypt(&mut audio, 0);
@@ -524,24 +525,46 @@ fn find_keyfile(name: &str) -> Option<PathBuf> {
     None
 }
 
-/// 根据 audio_hash 查 ekey：桌面 KGMusicV3.db → 安卓 MMKV mggkey_multi_process。
-fn lookup_ekey(audio_hash: &str) -> Result<String, String> {
-    if let Some(db_path) = find_db_path() {
-        let db_raw = std::fs::read(&db_path).map_err(|e| format!("读取 KGMusicV3.db 失败: {e}"))?;
-        let db_plain = decrypt_database(&db_raw);
-        let ekey_map = extract_ekey_map(&db_plain)?;
-        if let Some(ek) = ekey_map.get(audio_hash) {
-            return Ok(ek.clone());
-        }
+type KeyMap = HashMap<String, String>;
+type KeyLoad = Result<Option<KeyMap>, String>;
+
+// Cache each source only for the lifetime of one operation.
+#[derive(Default)]
+struct AudioKeyCache {
+    desktop: OnceCell<KeyLoad>,
+    mmkv: OnceCell<KeyLoad>,
+}
+
+fn cached_keys(
+    cache: &OnceCell<KeyLoad>,
+    load: impl FnOnce() -> KeyLoad,
+) -> Result<Option<&KeyMap>, String> {
+    cache.get_or_init(load).as_ref().map(Option::as_ref).map_err(Clone::clone)
+}
+
+impl AudioKeyCache {
+    fn desktop_keys(&self) -> Result<Option<&KeyMap>, String> {
+        cached_keys(&self.desktop, || {
+            let Some(path) = find_db_path() else { return Ok(None) };
+            let raw = std::fs::read(path).map_err(|e| format!("读取 KGMusicV3.db 失败: {e}"))?;
+            extract_ekey_map(&decrypt_database(&raw)).map(Some)
+        })
     }
-    if let Some(mmkv_path) = find_keyfile("mggkey_multi_process") {
-        let raw = std::fs::read(&mmkv_path).map_err(|e| format!("读取 mggkey_multi_process 失败: {e}"))?;
-        let map = parse_mmkv_ekey_map(&raw);
-        if let Some(ek) = map.get(audio_hash) {
-            return Ok(ek.clone());
+
+    fn lookup_ekey(&self, audio_hash: &str) -> Result<&str, String> {
+        if let Some(key) = self.desktop_keys()?.and_then(|map| map.get(audio_hash)) {
+            return Ok(key);
         }
+        let mmkv = cached_keys(&self.mmkv, || {
+            let Some(path) = find_keyfile("mggkey_multi_process") else { return Ok(None) };
+            let raw = std::fs::read(path).map_err(|e| format!("读取 mggkey_multi_process 失败: {e}"))?;
+            Ok(Some(parse_mmkv_ekey_map(&raw)))
+        })?;
+        if let Some(key) = mmkv.and_then(|map| map.get(audio_hash)) {
+            return Ok(key);
+        }
+        Err(format!("ekey not found for hash {audio_hash}（未找到 KGMusicV3.db 或 mggkey_multi_process）"))
     }
-    Err(format!("ekey not found for hash {audio_hash}（未找到 KGMusicV3.db 或 mggkey_multi_process）"))
 }
 
 fn find_kugou_download_dir() -> Option<String> {
@@ -672,6 +695,17 @@ struct BatchItem { filename: String, success: bool, format: String, error: Optio
 #[derive(Serialize)]
 struct BatchResult { total: usize, succeeded: usize, failed: usize, items: Vec<BatchItem> }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchProgress {
+    job_id: String,
+    total: usize,
+    processed: usize,
+    succeeded: usize,
+    failed: usize,
+    current_file: String,
+}
+
 // ---- Commands ----
 #[tauri::command]
 fn decrypt_kgg(file_data: Vec<u8>, filename: String) -> Result<DecryptResultData, String> {
@@ -749,65 +783,187 @@ fn stop_monitor(state: tauri::State<'_, std::sync::Mutex<MonitorState>>) -> Resu
 }
 
 #[tauri::command]
-fn batch_decrypt(input_dir: String, output_dir: String, app: tauri::AppHandle) -> Result<BatchResult, String> {
-    std::fs::create_dir_all(&output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
-    let mut items = Vec::new();
-    let mut succeeded = 0usize;
-    let mut failed = 0usize;
-    let entries = std::fs::read_dir(&input_dir).map_err(|e| e.to_string())?;
-    let mut supported_files: Vec<_> = entries.flatten()
-        .filter(|e| e.path().extension().map_or(false, |ext| is_supported_audio_ext(&ext.to_string_lossy())))
-        .collect();
-    supported_files.sort_by_key(|e| e.path());
-    let total = supported_files.len();
-    for entry in supported_files {
+async fn batch_decrypt(
+    input_dir: String,
+    output_dir: String,
+    job_id: String,
+    app: tauri::AppHandle,
+) -> Result<BatchResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_audio_batch(
+            Path::new(&input_dir), Path::new(&output_dir), job_id,
+            |event| { let _ = app.emit("batch-progress", event); },
+            |event| { let _ = app.emit("monitor-event", event); },
+        )
+    })
+    .await
+    .map_err(|e| format!("后台批量任务异常结束: {e}"))?
+}
+
+fn run_audio_batch(
+    input_dir: &Path,
+    output_dir: &Path,
+    job_id: String,
+    mut on_progress: impl FnMut(BatchProgress),
+    mut on_activity: impl FnMut(MonitorEvent),
+) -> Result<BatchResult, String> {
+    if output_dir.as_os_str().is_empty() {
+        return Err("请选择单独的输出目录".into());
+    }
+    let entries = std::fs::read_dir(input_dir).map_err(|e| format!("读取输入目录失败: {e}"))?;
+    std::fs::create_dir_all(output_dir).map_err(|e| format!("创建输出目录失败: {e}"))?;
+    let canonical_input = input_dir.canonicalize().map_err(|e| format!("解析输入目录失败: {e}"))?;
+    let canonical_output = output_dir.canonicalize().map_err(|e| format!("解析输出目录失败: {e}"))?;
+    if canonical_input == canonical_output {
+        return Err("输出目录不能和输入目录相同".into());
+    }
+    let mut supported_files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {e}"))?;
         let path = entry.path();
-        let fname = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let _ = app.emit("monitor-event", MonitorEvent {
-            event_type: "detect".into(), filename: fname.clone(), message: "batch".into()
-        });
-        match std::fs::read(&path) {
-            Ok(data) => match formats::decrypt_file(&data, &path.to_string_lossy()) {
-                Ok((audio, fmt)) => {
-                    let out_name = format!("{}.{}", fname, fmt);
-                    let out_path = Path::new(&output_dir).join(&out_name);
-                    match std::fs::write(&out_path, &audio) {
-                        Ok(_) => {
-                            succeeded += 1;
-                            let _ = app.emit("monitor-event", MonitorEvent {
-                                event_type: "success".into(), filename: fname.clone(), message: format!(".{}", fmt)
-                            });
-                            items.push(BatchItem { filename: fname, success: true, format: fmt, error: None });
-                        }
-                        Err(e) => {
-                            failed += 1;
-                            let msg = format!("save: {}", e);
-                            let _ = app.emit("monitor-event", MonitorEvent {
-                                event_type: "error".into(), filename: fname.clone(), message: msg.clone()
-                            });
-                            items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(msg) });
-                        }
-                    }
-                }
-                Err(e) => {
-                    failed += 1;
-                    let _ = app.emit("monitor-event", MonitorEvent {
-                        event_type: "error".into(), filename: fname.clone(), message: e.clone()
-                    });
-                    items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(e) });
-                }
-            },
-            Err(e) => {
-                failed += 1;
-                let msg = format!("read: {}", e);
-                let _ = app.emit("monitor-event", MonitorEvent {
-                    event_type: "error".into(), filename: fname.clone(), message: msg.clone()
-                });
-                items.push(BatchItem { filename: fname, success: false, format: String::new(), error: Some(msg) });
-            }
+        if path.extension().is_some_and(|ext| is_supported_audio_ext(&ext.to_string_lossy()))
+            && entry.file_type().map_err(|e| format!("读取文件类型失败: {e}"))?.is_file()
+        {
+            supported_files.push(path);
         }
     }
-    Ok(BatchResult { total, succeeded, failed, items })
+    supported_files.sort();
+    let total = supported_files.len();
+    let mut progress = BatchProgress {
+        job_id, total, processed: 0, succeeded: 0, failed: 0, current_file: String::new(),
+    };
+    let mut items = Vec::with_capacity(total);
+    let keys = AudioKeyCache::default();
+    on_progress(progress.clone());
+
+    for path in supported_files {
+        let filename = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        on_activity(MonitorEvent {
+            event_type: "detect".into(), filename: filename.clone(), message: "batch".into(),
+        });
+        let result = (|| {
+            let data = std::fs::read(&path).map_err(|e| format!("read: {e}"))?;
+            let (audio, format) = formats::decrypt_file_with_keys(&data, &path.to_string_lossy(), &keys)?;
+            let saved_name = write_unique_audio(&canonical_output, &filename, &format, &audio)
+                .map_err(|e| format!("save: {e}"))?;
+            Ok::<_, String>((format, saved_name))
+        })();
+        let (event_type, message, item) = match result {
+            Ok((format, saved_name)) => {
+                progress.succeeded += 1;
+                ("success", saved_name, BatchItem { filename: filename.clone(), success: true, format, error: None })
+            }
+            Err(error) => {
+                progress.failed += 1;
+                ("error", error.clone(), BatchItem {
+                    filename: filename.clone(), success: false, format: String::new(), error: Some(error),
+                })
+            }
+        };
+        items.push(item);
+        on_activity(MonitorEvent { event_type: event_type.into(), filename: filename.clone(), message });
+        progress.processed += 1;
+        progress.current_file = path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or(filename);
+        on_progress(progress.clone());
+    }
+    Ok(BatchResult { total, succeeded: progress.succeeded, failed: progress.failed, items })
+}
+
+fn write_unique_audio(output_dir: &Path, stem: &str, format: &str, audio: &[u8]) -> io::Result<String> {
+    let mut staged = tempfile::NamedTempFile::new_in(output_dir)?;
+    staged.write_all(audio)?;
+    for suffix in 1u64.. {
+        let name = if suffix == 1 {
+            format!("{stem}.{format}")
+        } else {
+            format!("{stem} ({suffix}).{format}")
+        };
+        match staged.persist_noclobber(output_dir.join(&name)) {
+            Ok(_) => return Ok(name),
+            Err(err) if err.error.kind() == io::ErrorKind::AlreadyExists => staged = err.file,
+            Err(err) => return Err(err.error),
+        }
+    }
+    unreachable!()
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn key_source_is_loaded_once_per_cache() {
+        let reads = Cell::new(0);
+        let cache = OnceCell::new();
+        for key in ["first", "second", "missing"] {
+            let map = cached_keys(&cache, || {
+                reads.set(reads.get() + 1);
+                Ok(Some(HashMap::from([
+                    ("first".into(), "fixture-a".into()),
+                    ("second".into(), "fixture-b".into()),
+                ])))
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(map.contains_key(key), key != "missing");
+        }
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn unique_audio_preserves_existing_files_and_uses_next_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("track.ogg");
+        std::fs::write(&existing, b"original").unwrap();
+
+        let first = write_unique_audio(dir.path(), "track", "ogg", b"one").unwrap();
+        let second = write_unique_audio(dir.path(), "track", "ogg", b"two").unwrap();
+        assert_eq!(first, "track (2).ogg");
+        assert_eq!(second, "track (3).ogg");
+        assert_eq!(std::fs::read(existing).unwrap(), b"original");
+        assert_eq!(std::fs::read(dir.path().join(first)).unwrap(), b"one");
+        assert_eq!(std::fs::read(dir.path().join(second)).unwrap(), b"two");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn batch_reports_progress_for_success_and_failure_without_overwriting() {
+        let input = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let source = input.path().join("a.qmc0");
+        let mut encrypted = b"OggS synthetic batch fixture".to_vec();
+        QmcCipher::static_cipher().decrypt(&mut encrypted, 0);
+        std::fs::write(&source, &encrypted).unwrap();
+        std::fs::write(input.path().join("b.qmc0"), b"x").unwrap();
+        std::fs::write(input.path().join("ignored.txt"), b"note").unwrap();
+        let existing = output.path().join("a.ogg");
+        std::fs::write(&existing, b"existing").unwrap();
+
+        let mut events = Vec::new();
+        let result = run_audio_batch(
+            input.path(), output.path(), "fixture".into(), |event| events.push(event), |_| {},
+        )
+        .unwrap();
+        assert_eq!((result.total, result.succeeded, result.failed), (2, 1, 1));
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.job_id == "fixture" && e.total == 2));
+        assert_eq!((events[0].processed, events[0].current_file.as_str()), (0, ""));
+        assert_eq!((events[1].processed, events[1].succeeded), (1, 1));
+        assert_eq!((events[2].processed, events[2].failed), (2, 1));
+        assert_eq!(events[2].current_file, "b.qmc0");
+        assert_eq!(std::fs::read(existing).unwrap(), b"existing");
+        assert_eq!(std::fs::read(output.path().join("a (2).ogg")).unwrap(), b"OggS synthetic batch fixture");
+        assert_eq!(std::fs::read(source).unwrap(), encrypted);
+    }
+
+    #[test]
+    fn batch_refuses_the_same_directory_through_an_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = run_audio_batch(dir.path(), &dir.path().join("."), "fixture".into(), |_| {}, |_| {});
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
 }
 
 #[tauri::command]
